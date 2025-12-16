@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Environment
+.env
+.env.local
+*.local
+
+# Data files (keep sample, ignore large datasets)
+data/batches/
+*.csv
+!jigsaw-toxic-comment-classification-challenge/*.csv
+
+# Model artifacts
+models/
+*.pkl
+*.onnx
+*.joblib
+
+# Logs
+logs/
+*.log
+airflow/logs/
+wandb
+
+# Docker volumes
+minio_data/
+postgres_data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
