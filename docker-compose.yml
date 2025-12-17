@@ -7,8 +7,7 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-in-production'
     MINIO_ENDPOINT: minio:9000
@@ -21,7 +20,7 @@ x-airflow-common: &airflow-common
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/logs:/opt/airflow/logs
     - ./src:/opt/airflow/src
-    - ./jigsaw-toxic-comment-classification-challenge:/opt/airflow/data
+    - ./data:/opt/airflow/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
@@ -93,7 +92,7 @@ services:
         mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins}
         /entrypoint airflow db migrate
-        airflow users create \
+        /entrypoint airflow users create \
           --username admin \
           --firstname Admin \
           --lastname User \
@@ -144,10 +143,12 @@ services:
     ports:
       - "5000:5000"
     environment:
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_SECURE: 'false'
+      USE_LOCAL_MINIO: ${USE_LOCAL_MINIO:-true}
+      MINIO_ENDPOINT_LOCAL: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
       MODEL_VERSION: ${MODEL_VERSION:-v1.0.0}
       PYTHONUNBUFFERED: 1
     volumes:

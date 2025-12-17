@@ -7,12 +7,35 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _get_minio_endpoint() -> str:
+    use_local = os.getenv("USE_LOCAL_MINIO", "true").lower() == "true"
+    
+    if use_local:
+        return os.getenv("MINIO_ENDPOINT_LOCAL", "localhost:9000")
+    
+    endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    if endpoint.startswith("https://"):
+        endpoint = endpoint[8:]
+    elif endpoint.startswith("http://"):
+        endpoint = endpoint[7:]
+    return endpoint
+
+
+def _get_minio_secure() -> bool:
+    use_local = os.getenv("USE_LOCAL_MINIO", "true").lower() == "true"
+    
+    if use_local:
+        return False
+    
+    return os.getenv("MINIO_SECURE", "true").lower() == "true"
+
+
 @dataclass
 class MinioConfig:
-    endpoint: str = field(default_factory=lambda: os.getenv("MINIO_ENDPOINT", "localhost:9000"))
+    endpoint: str = field(default_factory=_get_minio_endpoint)
     access_key: str = field(default_factory=lambda: os.getenv("MINIO_ACCESS_KEY", "minioadmin"))
     secret_key: str = field(default_factory=lambda: os.getenv("MINIO_SECRET_KEY", "minioadmin"))
-    secure: bool = field(default_factory=lambda: os.getenv("MINIO_SECURE", "false").lower() == "true")
+    secure: bool = field(default_factory=_get_minio_secure)
 
     raw_data_bucket: str = "raw-data"
     processed_data_bucket: str = "processed-data"

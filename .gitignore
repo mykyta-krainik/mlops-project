@@ -55,6 +55,7 @@ data/batches/
 
 # Model artifacts
 models/
+!src/models/
 *.pkl
 *.onnx
 *.joblib
