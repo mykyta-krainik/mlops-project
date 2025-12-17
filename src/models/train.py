@@ -219,6 +219,17 @@ def train(
                     onnx_path,
                 )
 
+                storage.upload_file(
+                    config.minio.models_bucket,
+                    "latest/model.onnx",
+                    onnx_path,
+                )
+                storage.upload_file(
+                    config.minio.models_bucket,
+                    "latest/model.pkl",
+                    sklearn_path,
+                )
+
     wandb_run.finish()
 
     return model, metrics
