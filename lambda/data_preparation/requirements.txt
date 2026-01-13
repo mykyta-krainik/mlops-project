@@ -1,0 +1,6 @@
+# Lambda dependencies for data preparation
+numpy>=1.24.0,<2.0.0
+pandas>=2.1.0,<2.3.0
+boto3>=1.34.0
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0,<3.0.0

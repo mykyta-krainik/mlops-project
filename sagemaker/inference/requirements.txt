@@ -1,0 +1,16 @@
+# SageMaker Inference Dependencies
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# ONNX runtime for inference
+onnxruntime>=1.16.0
+
+# SageMaker inference toolkit
+sagemaker-inference>=1.10.0
+
+# Flask for serving (used by sagemaker-inference)
+flask>=2.2.0
+gunicorn>=21.0.0
+
+# Utilities
+boto3>=1.34.0

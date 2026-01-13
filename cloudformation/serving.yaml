@@ -1,0 +1,393 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Model serving infrastructure - SageMaker endpoint with auto-scaling
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: mlops-toxic
+    Description: Project name prefix for resources
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  InferenceImageUri:
+    Type: String
+    Description: ECR URI for SageMaker inference container
+
+  InitialInstanceCount:
+    Type: Number
+    Default: 1
+    Description: Initial number of instances for endpoint
+
+  InstanceType:
+    Type: String
+    Default: ml.c5.large
+    AllowedValues:
+      - ml.c5.large
+      - ml.t3.large
+      - ml.m5.large
+      - ml.m5.xlarge
+    Description: Instance type for SageMaker endpoint
+
+  MinCapacity:
+    Type: Number
+    Default: 1
+    Description: Minimum number of instances for auto-scaling
+
+  MaxCapacity:
+    Type: Number
+    Default: 3
+    Description: Maximum number of instances for auto-scaling
+
+  TargetInvocationsPerInstance:
+    Type: Number
+    Default: 100
+    Description: Target invocations per instance for auto-scaling
+
+Resources:
+  # Note: ECR repository is created by deploy.sh script before this stack is deployed
+  # This allows the inference image to be built and pushed before CloudFormation runs
+  
+  # SageMaker Model
+  ToxicCommentModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub ${ProjectName}-${Environment}-model
+      ExecutionRoleArn: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-SageMakerExecutionRoleArn
+      PrimaryContainer:
+        Image: !Ref InferenceImageUri
+        ModelDataUrl: !Sub 
+          - s3://${Bucket}/latest/model.tar.gz
+          - Bucket: !ImportValue 
+              Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+        Environment:
+          SAGEMAKER_PROGRAM: inference.py
+          SAGEMAKER_SUBMIT_DIRECTORY: /opt/ml/model/code
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-SageMakerSecurityGroupId
+        Subnets:
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-PrivateSubnet1Id
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-PrivateSubnet2Id
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-model
+
+  # SageMaker Endpoint Configuration
+  EndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub mlops-${Environment}-ep-cfg
+      ProductionVariants:
+        - VariantName: primary
+          ModelName: !GetAtt ToxicCommentModel.ModelName
+          InitialInstanceCount: !Ref InitialInstanceCount
+          InstanceType: !Ref InstanceType
+          InitialVariantWeight: 1.0
+      DataCaptureConfig:
+        EnableCapture: true
+        InitialSamplingPercentage: 100
+        DestinationS3Uri: !Sub 
+          - s3://${Bucket}/data-capture
+          - Bucket: !ImportValue 
+              Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+        CaptureOptions:
+          - CaptureMode: Input
+          - CaptureMode: Output
+        CaptureContentTypeHeader:
+          JsonContentTypes:
+            - application/json
+      Tags:
+        - Key: Name
+          Value: !Sub mlops-${Environment}-ep-cfg
+
+  # SageMaker Endpoint
+  ToxicCommentEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub mlops-${Environment}-ep
+      EndpointConfigName: !GetAtt EndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Name
+          Value: !Sub mlops-${Environment}-ep
+
+  # Auto Scaling Target
+  EndpointScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ToxicCommentEndpoint
+    Properties:
+      MaxCapacity: !Ref MaxCapacity
+      MinCapacity: !Ref MinCapacity
+      ResourceId: !Sub endpoint/mlops-${Environment}-ep/variant/primary
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/sagemaker.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_SageMakerEndpoint
+      ScalableDimension: sagemaker:variant:DesiredInstanceCount
+      ServiceNamespace: sagemaker
+
+  # Auto Scaling Policy - Target Tracking
+  EndpointScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub mlops-${Environment}-ep-scale
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref EndpointScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: !Ref TargetInvocationsPerInstance
+        PredefinedMetricSpecification:
+          PredefinedMetricType: SageMakerVariantInvocationsPerInstance
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  # Lambda function to update endpoint with new model
+  EndpointUpdateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub mlops-${Environment}-ep-update
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-LambdaExecutionRoleArn
+      Timeout: 600
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENDPOINT_NAME: !Sub mlops-${Environment}-ep
+          MODEL_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+          INFERENCE_IMAGE_URI: !Ref InferenceImageUri
+          EXECUTION_ROLE_ARN: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-SageMakerExecutionRoleArn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import time
+          from datetime import datetime
+          
+          sagemaker = boto3.client('sagemaker')
+          
+          def handler(event, context):
+              """Update SageMaker endpoint with new model version."""
+              endpoint_name = os.environ['ENDPOINT_NAME']
+              model_bucket = os.environ['MODEL_BUCKET']
+              inference_image = os.environ['INFERENCE_IMAGE_URI']
+              execution_role = os.environ['EXECUTION_ROLE_ARN']
+              
+              # Get model path from event or use latest
+              model_path = event.get('model_path', 'latest/model.tar.gz')
+              model_data_url = f's3://{model_bucket}/{model_path}'
+              
+              timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+              model_name = f"{endpoint_name}-m-{timestamp}"
+              config_name = f"{endpoint_name}-cfg-{timestamp}"
+              
+              # Create new model
+              sagemaker.create_model(
+                  ModelName=model_name,
+                  PrimaryContainer={
+                      'Image': inference_image,
+                      'ModelDataUrl': model_data_url,
+                      'Environment': {
+                          'SAGEMAKER_PROGRAM': 'inference.py',
+                          'SAGEMAKER_SUBMIT_DIRECTORY': '/opt/ml/model/code'
+                      }
+                  },
+                  ExecutionRoleArn=execution_role
+              )
+              
+              # Create new endpoint config
+              sagemaker.create_endpoint_config(
+                  EndpointConfigName=config_name,
+                  ProductionVariants=[{
+                      'VariantName': 'primary',
+                      'ModelName': model_name,
+                      'InitialInstanceCount': 1,
+                      'InstanceType': 'ml.t3.medium',
+                      'InitialVariantWeight': 1.0
+                  }],
+                  DataCaptureConfig={
+                      'EnableCapture': True,
+                      'InitialSamplingPercentage': 100,
+                      'DestinationS3Uri': f's3://{model_bucket}/data-capture',
+                      'CaptureOptions': [
+                          {'CaptureMode': 'Input'},
+                          {'CaptureMode': 'Output'}
+                      ]
+                  }
+              )
+              
+              # Update endpoint
+              sagemaker.update_endpoint(
+                  EndpointName=endpoint_name,
+                  EndpointConfigName=config_name
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'message': 'Endpoint update initiated',
+                      'model_name': model_name,
+                      'config_name': config_name
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub mlops-${Environment}-ep-update
+
+  # API Gateway for external access (optional)
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-api
+      Description: API Gateway for toxic comment classification
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-api
+
+  # API Gateway Resource
+  PredictResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: predict
+
+  # API Gateway Method
+  PredictMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref PredictResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiProxyFunction.Arn}/invocations
+
+  # Lambda function to proxy API requests to SageMaker
+  ApiProxyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-api-proxy
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-LambdaExecutionRoleArn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENDPOINT_NAME: !Sub mlops-${Environment}-ep
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          
+          runtime = boto3.client('sagemaker-runtime')
+          
+          def handler(event, context):
+              """Proxy API requests to SageMaker endpoint."""
+              endpoint_name = os.environ['ENDPOINT_NAME']
+              
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  comment = body.get('comment', '')
+                  
+                  if not comment:
+                      return {
+                          'statusCode': 400,
+                          'headers': {'Content-Type': 'application/json'},
+                          'body': json.dumps({'error': 'Missing comment field'})
+                      }
+                  
+                  response = runtime.invoke_endpoint(
+                      EndpointName=endpoint_name,
+                      ContentType='application/json',
+                      Body=json.dumps({'comment': comment})
+                  )
+                  
+                  result = json.loads(response['Body'].read().decode())
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps(result)
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({'error': str(e)})
+                  }
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-api-proxy
+
+  # Permission for API Gateway to invoke Lambda
+  ApiProxyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiProxyFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: PredictMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref Environment
+
+Outputs:
+  InferenceECRRepositoryUri:
+    Description: ECR Repository URI for inference container (created by deploy.sh)
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}-inference
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-InferenceECRRepositoryUri
+
+  EndpointName:
+    Description: SageMaker endpoint name
+    Value: !Sub mlops-${Environment}-ep
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-EndpointName
+
+  EndpointArn:
+    Description: SageMaker endpoint ARN
+    Value: !Ref ToxicCommentEndpoint
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-EndpointArn
+
+  EndpointUpdateFunctionArn:
+    Description: Endpoint update Lambda function ARN
+    Value: !GetAtt EndpointUpdateFunction.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-EndpointUpdateFunctionArn
+
+  ApiGatewayUrl:
+    Description: API Gateway URL
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/predict
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-ApiGatewayUrl
+
+  ApiGatewayId:
+    Description: API Gateway ID
+    Value: !Ref ApiGateway
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-ApiGatewayId

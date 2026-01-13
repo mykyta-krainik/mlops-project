@@ -1,0 +1,486 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Monitoring infrastructure - CloudWatch alarms, SNS, Evidently Lambda
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: mlops-toxic
+    Description: Project name prefix for resources
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  AlertEmail:
+    Type: String
+    Description: Email address for alert notifications
+
+  ErrorRateThreshold:
+    Type: Number
+    Default: 5
+    Description: Error rate threshold percentage for alarm
+
+  LatencyThreshold:
+    Type: Number
+    Default: 500
+    Description: Latency threshold in milliseconds for alarm
+
+  DriftThreshold:
+    Type: Number
+    Default: 0.15
+    Description: Drift score threshold for alarm
+
+Resources:
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-${Environment}-alerts
+      DisplayName: MLOps Toxic Comment Alerts
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-alerts
+
+  # SNS Email Subscription
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # CloudWatch Dashboard
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${ProjectName}-${Environment}-monitoring
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "SageMaker Endpoint Invocations",
+                "metrics": [
+                  ["AWS/SageMaker", "Invocations", "EndpointName", "${ProjectName}-${Environment}-endpoint", "VariantName", "primary"]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Model Latency",
+                "metrics": [
+                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${ProjectName}-${Environment}-endpoint", "VariantName", "primary"]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Prediction Errors",
+                "metrics": [
+                  ["ToxicCommentAPI", "ErrorCount", "Environment", "${Environment}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Toxicity Rate",
+                "metrics": [
+                  ["ToxicCommentAPI", "ToxicityRate", "Environment", "${Environment}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Data Drift Score",
+                "metrics": [
+                  ["ToxicCommentAPI", "DriftScore", "Environment", "${Environment}"]
+                ],
+                "period": 3600,
+                "stat": "Maximum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Endpoint Instance Count",
+                "metrics": [
+                  ["AWS/SageMaker", "CPUUtilization", "EndpointName", "${ProjectName}-${Environment}-endpoint", "VariantName", "primary"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+  # CloudWatch Alarm - High Error Rate
+  HighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-high-error-rate
+      AlarmDescription: Error rate exceeds threshold
+      MetricName: Invocation4XXErrors
+      Namespace: AWS/SageMaker
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ErrorRateThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub ${ProjectName}-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm - High Latency
+  HighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-high-latency
+      AlarmDescription: Model latency exceeds threshold
+      MetricName: ModelLatency
+      Namespace: AWS/SageMaker
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref LatencyThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub ${ProjectName}-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm - Endpoint Down
+  EndpointDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-endpoint-down
+      AlarmDescription: No endpoint invocations detected
+      MetricName: Invocations
+      Namespace: AWS/SageMaker
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub ${ProjectName}-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
+
+  # CloudWatch Alarm - Drift Detected
+  DriftDetectedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-drift-detected
+      AlarmDescription: Data drift score exceeds threshold
+      MetricName: DriftScore
+      Namespace: ToxicCommentAPI
+      Statistic: Maximum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: !Ref DriftThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm - 5XX Errors
+  ServerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-server-errors
+      AlarmDescription: Server errors detected
+      MetricName: Invocation5XXErrors
+      Namespace: AWS/SageMaker
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub ${ProjectName}-${Environment}-endpoint
+        - Name: VariantName
+          Value: primary
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # Evidently Lambda Execution Role
+  EvidentlyLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-evidently-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-evidently-reports-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-evidently-reports-${AWS::AccountId}/*
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-models-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-models-${AWS::AccountId}/*
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+        - PolicyName: SNSPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertTopic
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-evidently-lambda-role
+
+  # Evidently Drift Detection Lambda
+  EvidentlyDriftFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-evidently-drift
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt EvidentlyLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 2048
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          ENVIRONMENT: !Ref Environment
+          MODELS_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+          EVIDENTLY_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-EvidentlyReportsBucket
+          SNS_TOPIC_ARN: !Ref AlertTopic
+          DRIFT_THRESHOLD: !Ref DriftThreshold
+      Code:
+        ZipFile: |
+          # Placeholder - actual code in src/monitoring/evidently_monitor.py
+          import json
+          import os
+          import boto3
+          from datetime import datetime
+          
+          cloudwatch = boto3.client('cloudwatch')
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+          
+          def handler(event, context):
+              """Run Evidently drift detection on captured predictions."""
+              environment = os.environ['ENVIRONMENT']
+              models_bucket = os.environ['MODELS_BUCKET']
+              evidently_bucket = os.environ['EVIDENTLY_BUCKET']
+              drift_threshold = float(os.environ['DRIFT_THRESHOLD'])
+              sns_topic = os.environ['SNS_TOPIC_ARN']
+              
+              # This is a placeholder - full implementation in src/monitoring/evidently_monitor.py
+              # The actual Lambda will:
+              # 1. Download captured predictions from S3
+              # 2. Load reference dataset
+              # 3. Run Evidently drift detection
+              # 4. Generate HTML report
+              # 5. Upload report to S3
+              # 6. Publish drift score to CloudWatch
+              # 7. Send SNS alert if drift detected
+              
+              drift_score = 0.0  # Placeholder
+              
+              # Publish metric to CloudWatch
+              cloudwatch.put_metric_data(
+                  Namespace='ToxicCommentAPI',
+                  MetricData=[{
+                      'MetricName': 'DriftScore',
+                      'Dimensions': [
+                          {'Name': 'Environment', 'Value': environment}
+                      ],
+                      'Value': drift_score,
+                      'Unit': 'None'
+                  }]
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'drift_score': drift_score,
+                      'drift_detected': drift_score > drift_threshold
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-evidently-drift
+
+  # EventBridge Rule for Daily Drift Detection
+  DailyDriftDetectionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-daily-drift-detection
+      Description: Run drift detection daily
+      ScheduleExpression: cron(0 8 * * ? *)
+      State: ENABLED
+      Targets:
+        - Id: EvidentlyDriftTarget
+          Arn: !GetAtt EvidentlyDriftFunction.Arn
+
+  # Permission for EventBridge to invoke Evidently Lambda
+  EvidentlyDriftEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EvidentlyDriftFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyDriftDetectionRule.Arn
+
+  # Log Group for API metrics
+  APILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/${ProjectName}/${Environment}/api
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-api-logs
+
+  # Metric Filter for Error Count
+  ErrorCountMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref APILogGroup
+      FilterPattern: '[timestamp, requestId, level="ERROR", ...]'
+      MetricTransformations:
+        - MetricName: ErrorCount
+          MetricNamespace: ToxicCommentAPI
+          MetricValue: '1'
+
+Outputs:
+  AlertTopicArn:
+    Description: SNS Alert Topic ARN
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-AlertTopicArn
+
+  DashboardName:
+    Description: CloudWatch Dashboard name
+    Value: !Ref MonitoringDashboard
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-DashboardName
+
+  EvidentlyDriftFunctionArn:
+    Description: Evidently drift detection Lambda ARN
+    Value: !GetAtt EvidentlyDriftFunction.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-EvidentlyDriftFunctionArn
+
+  APILogGroupName:
+    Description: API Log Group name
+    Value: !Ref APILogGroup
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-APILogGroupName
+
+  HighErrorRateAlarmArn:
+    Description: High error rate alarm ARN
+    Value: !GetAtt HighErrorRateAlarm.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-HighErrorRateAlarmArn
+
+  HighLatencyAlarmArn:
+    Description: High latency alarm ARN
+    Value: !GetAtt HighLatencyAlarm.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-HighLatencyAlarmArn
+
+  DriftDetectedAlarmArn:
+    Description: Drift detected alarm ARN
+    Value: !GetAtt DriftDetectedAlarm.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-DriftDetectedAlarmArn

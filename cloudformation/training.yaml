@@ -1,0 +1,519 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Training infrastructure - SageMaker, MLflow, Lambda functions, EventBridge
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: mlops-toxic
+    Description: Project name prefix for resources
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  TrainingImageUri:
+    Type: String
+    Description: ECR URI for SageMaker training container
+
+  DataPreparationImageUri:
+    Type: String
+    Description: ECR URI for data preparation Lambda container
+
+  ModelPromotionImageUri:
+    Type: String
+    Description: ECR URI for model promotion Lambda container
+
+  MLflowInstanceType:
+    Type: String
+    Default: t3.small
+    Description: EC2 instance type for MLflow server
+
+  MLflowAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: AMI for MLflow server
+
+Resources:
+  # Note: ECR repositories are created by the registry stack before this stack is deployed
+  # Container images are built and pushed before CloudFormation runs
+  
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-sagemaker-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 
+                    - '${BucketArn}'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-RawDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-RawDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ModelsBucketArn
+                  - !Sub 
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ModelsBucketArn
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-sagemaker-execution-role
+
+  BaselineModelPackageGroup:
+    Type: AWS::SageMaker::ModelPackageGroup
+    Properties:
+      ModelPackageGroupName: !Sub ${ProjectName}-${Environment}-baseline
+      ModelPackageGroupDescription: Baseline TF-IDF + LogReg model for toxic comment classification
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-baseline
+
+  ImprovedModelPackageGroup:
+    Type: AWS::SageMaker::ModelPackageGroup
+    Properties:
+      ModelPackageGroupName: !Sub ${ProjectName}-${Environment}-improved
+      ModelPackageGroupDescription: Improved model for toxic comment classification
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-improved
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-lambda-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 
+                    - '${BucketArn}'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-RawDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-RawDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucketArn
+                  - !Sub 
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 
+                        Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucketArn
+        - PolicyName: SageMakerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:ListModelPackages
+                  - sagemaker:DescribeModelPackage
+                  - sagemaker:UpdateModelPackage
+                  - sagemaker:CreateModel
+                  - sagemaker:UpdateEndpoint
+                  - sagemaker:AddTags
+                  - sagemaker:AddAssociation
+                  - sagemaker:CreateArtifact
+                  - sagemaker:CreateContext
+                  - sagemaker:DescribeArtifact
+                  - sagemaker:DescribeContext
+                  - sagemaker:QueryLineage
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt SageMakerExecutionRole.Arn
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !ImportValue 
+                  Fn::Sub: ${ProjectName}-${Environment}-DBSecretArn
+        - PolicyName: SNSPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-lambda-execution-role
+
+  DataPreparationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-data-preparation
+      PackageType: Image
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Code:
+        ImageUri: !Ref DataPreparationImageUri
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-LambdaSecurityGroupId
+        SubnetIds:
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-PrivateSubnet1Id
+          - !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-PrivateSubnet2Id
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          ENVIRONMENT: !Ref Environment
+          RAW_DATA_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-RawDataBucket
+          PROCESSED_DATA_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucket
+          MODELS_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+          DB_SECRET_ARN: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-DBSecretArn
+          SAGEMAKER_ROLE_ARN: !GetAtt SageMakerExecutionRole.Arn
+          TRAINING_IMAGE_URI: !Ref TrainingImageUri
+          ENABLE_DATASET_VERSIONING: 'true'
+          METADATA_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ProcessedDataBucket
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-data-preparation
+
+  # Model Promotion Lambda Function
+  ModelPromotionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-model-promotion
+      PackageType: Image
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Code:
+        ImageUri: !Ref ModelPromotionImageUri
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          ENVIRONMENT: !Ref Environment
+          MODELS_BUCKET: !ImportValue 
+            Fn::Sub: ${ProjectName}-${Environment}-ModelsBucket
+          BASELINE_MODEL_GROUP: !Sub ${ProjectName}-${Environment}-baseline
+          IMPROVED_MODEL_GROUP: !Sub ${ProjectName}-${Environment}-improved
+          PROMOTION_THRESHOLD: '0.02'
+          SAGEMAKER_ROLE_ARN: !GetAtt SageMakerExecutionRole.Arn
+          ENDPOINT_NAME: !Sub ${ProjectName}-${Environment}-endpoint
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-model-promotion
+
+  # EventBridge Rule for Weekly Training
+  WeeklyTrainingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-weekly-training
+      Description: Trigger weekly model training
+      ScheduleExpression: cron(0 6 ? * SUN *)
+      State: ENABLED
+      Targets:
+        - Id: DataPreparationTarget
+          Arn: !GetAtt DataPreparationFunction.Arn
+
+  # Permission for EventBridge to invoke Lambda
+  DataPreparationEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataPreparationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WeeklyTrainingRule.Arn
+
+  # EventBridge Rule for SageMaker Training Job Completion
+  TrainingCompletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-training-completion
+      Description: Trigger model promotion on training job completion
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Training Job State Change
+        detail:
+          TrainingJobStatus:
+            - Completed
+          TrainingJobName:
+            - prefix: !Sub ${ProjectName}-${Environment}
+      State: ENABLED
+      Targets:
+        - Id: ModelPromotionTarget
+          Arn: !GetAtt ModelPromotionFunction.Arn
+
+  # Permission for EventBridge to invoke Model Promotion Lambda
+  ModelPromotionEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ModelPromotionFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TrainingCompletionRule.Arn
+
+  # MLflow Server Security Group
+  MLflowSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-mlflow-sg
+      GroupDescription: Security group for MLflow server
+      VpcId: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 10.0.0.0/16
+          Description: Allow MLflow from VPC
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH (restrict in production)
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-mlflow-sg
+
+  # MLflow Server Instance Role
+  MLflowInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-mlflow-instance-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ArtifactsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-mlflow-artifacts-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-mlflow-artifacts-${AWS::AccountId}/*
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !ImportValue 
+                  Fn::Sub: ${ProjectName}-${Environment}-DBSecretArn
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-mlflow-instance-role
+
+  MLflowInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${ProjectName}-${Environment}-mlflow-instance-profile
+      Roles:
+        - !Ref MLflowInstanceRole
+
+  # MLflow Server EC2 Instance
+  MLflowServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref MLflowInstanceType
+      ImageId: !Ref MLflowAMI
+      IamInstanceProfile: !Ref MLflowInstanceProfile
+      SubnetId: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-PublicSubnet1Id
+      SecurityGroupIds:
+        - !Ref MLflowSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y python3 python3-pip postgresql
+          pip3 install mlflow boto3 psycopg2-binary
+          
+          # Create MLflow service
+          cat > /etc/systemd/system/mlflow.service << 'EOF'
+          [Unit]
+          Description=MLflow Tracking Server
+          After=network.target
+          
+          [Service]
+          User=ec2-user
+          WorkingDirectory=/home/ec2-user
+          ExecStart=/usr/local/bin/mlflow server \
+            --host 0.0.0.0 \
+            --port 5000 \
+            --backend-store-uri postgresql://admin:REPLACE_PASSWORD@${ReviewsDBEndpoint}:5432/mlflow \
+            --default-artifact-root s3://${ProjectName}-${Environment}-mlflow-artifacts-${AWS::AccountId}/
+          Restart=always
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          systemctl daemon-reload
+          systemctl enable mlflow
+          systemctl start mlflow
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-mlflow-server
+
+  # Get RDS endpoint for reference
+  ReviewsDBEndpoint:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/${Environment}/rds/endpoint
+      Type: String
+      Value: !ImportValue 
+        Fn::Sub: ${ProjectName}-${Environment}-ReviewsDBEndpoint
+
+Outputs:
+  TrainingECRRepositoryUri:
+    Description: ECR Repository URI for training container (created by deploy.sh)
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}-training
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-TrainingECRRepositoryUri
+
+  SageMakerExecutionRoleArn:
+    Description: SageMaker execution role ARN
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-SageMakerExecutionRoleArn
+
+  LambdaExecutionRoleArn:
+    Description: Lambda execution role ARN
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-LambdaExecutionRoleArn
+
+  DataPreparationFunctionArn:
+    Description: Data preparation Lambda function ARN
+    Value: !GetAtt DataPreparationFunction.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-DataPreparationFunctionArn
+
+  ModelPromotionFunctionArn:
+    Description: Model promotion Lambda function ARN
+    Value: !GetAtt ModelPromotionFunction.Arn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-ModelPromotionFunctionArn
+
+  BaselineModelPackageGroupArn:
+    Description: Baseline model package group ARN
+    Value: !GetAtt BaselineModelPackageGroup.ModelPackageGroupArn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-BaselineModelPackageGroupArn
+
+  ImprovedModelPackageGroupArn:
+    Description: Improved model package group ARN
+    Value: !GetAtt ImprovedModelPackageGroup.ModelPackageGroupArn
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-ImprovedModelPackageGroupArn
+
+  MLflowServerPrivateIp:
+    Description: MLflow server private IP
+    Value: !GetAtt MLflowServer.PrivateIp
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-MLflowServerPrivateIp
+
+  MLflowTrackingUri:
+    Description: MLflow tracking URI
+    Value: !Sub http://${MLflowServer.PrivateIp}:5000
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-MLflowTrackingUri

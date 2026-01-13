@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Main stack for Toxic Comment Classification MLOps infrastructure
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: mlops-toxic
+    Description: Project name prefix for resources
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  AlertEmail:
+    Type: String
+    Description: Email address for alert notifications
+
+  TemplatesBucket:
+    Type: String
+    Description: S3 bucket containing nested CloudFormation templates
+
+Resources:
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/cloudformation/storage.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-storage-stack
+
+  TrainingStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: StorageStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/cloudformation/training.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        TrainingImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}-training:latest
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-training-stack
+
+  # Serving Stack - SageMaker endpoint
+  ServingStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: TrainingStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/cloudformation/serving.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        InferenceImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}-inference:latest
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-serving-stack
+
+  # Monitoring Stack - CloudWatch, SNS, Evidently
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ServingStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/cloudformation/monitoring.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        AlertEmail: !Ref AlertEmail
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-monitoring-stack
+
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !GetAtt StorageStack.Outputs.VpcId
+
+  RawDataBucket:
+    Description: Raw data S3 bucket
+    Value: !GetAtt StorageStack.Outputs.RawDataBucketName
+
+  ProcessedDataBucket:
+    Description: Processed data S3 bucket
+    Value: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
+
+  ModelsBucket:
+    Description: Models S3 bucket
+    Value: !GetAtt StorageStack.Outputs.ModelsBucketName
+
+  ReviewsDBEndpoint:
+    Description: RDS PostgreSQL endpoint
+    Value: !GetAtt StorageStack.Outputs.ReviewsDBEndpoint
+
+  TrainingECRRepository:
+    Description: Training ECR repository URI
+    Value: !GetAtt TrainingStack.Outputs.TrainingECRRepositoryUri
+
+  InferenceECRRepository:
+    Description: Inference ECR repository URI
+    Value: !GetAtt ServingStack.Outputs.InferenceECRRepositoryUri
+
+  SageMakerEndpoint:
+    Description: SageMaker endpoint name
+    Value: !GetAtt ServingStack.Outputs.EndpointName
+
+  ApiGatewayUrl:
+    Description: API Gateway URL
+    Value: !GetAtt ServingStack.Outputs.ApiGatewayUrl
+
+  MLflowTrackingUri:
+    Description: MLflow tracking URI
+    Value: !GetAtt TrainingStack.Outputs.MLflowTrackingUri
+
+  AlertTopic:
+    Description: SNS alert topic ARN
+    Value: !GetAtt MonitoringStack.Outputs.AlertTopicArn
+
+  Dashboard:
+    Description: CloudWatch dashboard name
+    Value: !GetAtt MonitoringStack.Outputs.DashboardName

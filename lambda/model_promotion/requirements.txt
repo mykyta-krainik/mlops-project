@@ -1,0 +1,2 @@
+# Lambda dependencies for model promotion
+# boto3 is included in the Lambda base image
