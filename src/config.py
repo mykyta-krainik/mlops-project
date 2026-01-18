@@ -107,6 +107,34 @@ class ModelConfig:
 
 
 @dataclass
+class DatabricksConfig:
+    host: str = field(default_factory=lambda: os.getenv("DATABRICKS_HOST", ""))
+    token: str = field(default_factory=lambda: os.getenv("DATABRICKS_TOKEN", ""))
+    catalog: str = field(default_factory=lambda: os.getenv("DATABRICKS_CATALOG", "mlops_catalog"))
+    schema: str = field(default_factory=lambda: os.getenv("DATABRICKS_SCHEMA", "toxic_comments"))
+    serving_endpoint: str = field(default_factory=lambda: os.getenv("DATABRICKS_SERVING_ENDPOINT", ""))
+    cluster_id: str = field(default_factory=lambda: os.getenv("DATABRICKS_CLUSTER_ID", ""))
+    bundle_env: str = field(default_factory=lambda: os.getenv("DATABRICKS_BUNDLE_ENV", "dev"))
+
+
+@dataclass
+class ServingConfig:
+    use_databricks: bool = field(
+        default_factory=lambda: os.getenv("USE_DATABRICKS_SERVING", "true").lower() == "true"
+    )
+    model_type: str = field(default_factory=lambda: os.getenv("MODEL_TYPE", "baseline"))
+    metric_threshold: float = field(default_factory=lambda: float(os.getenv("METRIC_THRESHOLD", "2.0")))
+
+
+@dataclass
+class MonitoringConfig:
+    drift_threshold: float = field(
+        default_factory=lambda: float(os.getenv("EVIDENTLY_DRIFT_THRESHOLD", "0.1"))
+    )
+    lookback_days: int = field(default_factory=lambda: int(os.getenv("MONITORING_LOOKBACK_DAYS", "7")))
+
+
+@dataclass
 class Config:
     minio: MinioConfig = field(default_factory=MinioConfig)
     mlflow: MLflowConfig = field(default_factory=MLflowConfig)
@@ -114,6 +142,9 @@ class Config:
     moderation: ModerationThresholds = field(default_factory=ModerationThresholds)
     api: APIConfig = field(default_factory=APIConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    databricks: DatabricksConfig = field(default_factory=DatabricksConfig)
+    serving: ServingConfig = field(default_factory=ServingConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
 
 
 config = Config()

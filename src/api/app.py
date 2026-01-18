@@ -29,6 +29,17 @@ class ModelManager:
         self._model: Optional[ToxicCommentClassifier] = None
         self._model_source: Optional[str] = None
         self._preprocessor = TextPreprocessor()
+        self._databricks_client: Optional[object] = None
+        
+        # Initialize Databricks client if enabled
+        if config.serving.use_databricks:
+            try:
+                from src.api.databricks_serving import DatabricksServingClient
+                self._databricks_client = DatabricksServingClient()
+                logger.info("Databricks serving client initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Databricks client: {e}")
+                self._databricks_client = None
 
     @property
     def model(self) -> Optional[ToxicCommentClassifier]:
@@ -37,6 +48,18 @@ class ModelManager:
     @property
     def is_loaded(self) -> bool:
         return self._model is not None and self._model.is_trained
+
+    @property
+    def is_databricks_available(self) -> bool:
+        """Check if Databricks serving is available."""
+        if not config.serving.use_databricks:
+            return False
+        if self._databricks_client is None:
+            return False
+        try:
+            return self._databricks_client.health_check()
+        except:
+            return False
 
     def load_from_minio(self, bucket: str, object_name: str) -> bool:
         try:
@@ -75,12 +98,29 @@ class ModelManager:
             return False
 
     def predict(self, text: str) -> dict:
+        """
+        Make prediction using Databricks serving or local model.
+        
+        Tries Databricks first if enabled, falls back to local model.
+        """
+        # Try Databricks serving first
+        if config.serving.use_databricks and self._databricks_client:
+            try:
+                processed_text = self._preprocessor.preprocess_text(text)
+                predictions = self._databricks_client.predict(processed_text)
+                logger.info("Prediction made via Databricks serving")
+                return predictions
+            except Exception as e:
+                logger.warning(f"Databricks serving failed, falling back to local: {e}")
+        
+        # Fallback to local model
         if not self.is_loaded:
-            raise RuntimeError("Model not loaded")
+            raise RuntimeError("Model not loaded and Databricks serving unavailable")
 
         processed_text = self._preprocessor.preprocess_text(text)
         predictions = self._model.predict_single(processed_text)
-
+        logger.info("Prediction made via local model")
+        
         return predictions
 
 
@@ -221,6 +261,21 @@ def create_app() -> Flask:
             return jsonify(
                 ErrorResponse(error="Reload failed", detail=str(e)).model_dump()
             ), 500
+
+    @app.route("/serving/status", methods=["GET"])
+    def serving_status():
+        """Check serving configuration and availability."""
+        databricks_available = model_manager.is_databricks_available
+        local_available = model_manager.is_loaded
+        
+        status = {
+            "databricks_enabled": config.serving.use_databricks,
+            "databricks_available": databricks_available,
+            "local_model_loaded": local_available,
+            "active_backend": "databricks" if databricks_available else "local" if local_available else "none",
+        }
+        
+        return jsonify(status)
 
     return app
 

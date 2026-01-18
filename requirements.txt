@@ -14,6 +14,15 @@ gunicorn>=21.0.0
 minio>=7.2.0
 boto3>=1.34.0
 
+# Databricks
+databricks-sdk>=0.18.0
+databricks-cli>=0.18.0
+pyspark>=3.4.0
+
+# Monitoring
+evidently>=0.4.0
+sentence-transformers>=2.2.0
+
 python-dotenv>=1.0.0
 tqdm>=4.66.0
 requests>=2.31.0
