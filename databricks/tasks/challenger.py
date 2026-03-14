@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Challenger Task for Databricks Lakeflow Pipeline.
 
@@ -196,18 +197,63 @@ def challenger(model_name: str, metric_threshold: float):
         print(f"{'='*60}")
 
 
+def get_arg(key, default=None, args=None):
+    """Get argument from argparse args or dbutils widgets."""
+    # Try getting from args first (local execution)
+    if args and hasattr(args, key.replace('-', '_')) and getattr(args, key.replace('-', '_')) is not None:
+        return getattr(args, key.replace('-', '_'))
+    
+    # Try getting from dbutils widgets (Databricks execution)
+    try:
+        from pyspark.dbutils import DBUtils
+        spark = SparkSession.builder.getOrCreate()
+        dbutils = DBUtils(spark)
+        val = dbutils.widgets.get(key)
+        if val:
+            return val
+    except Exception:
+        pass
+        
+    return default
+
+
 def main():
     """Main entry point."""
+    # Define display for local execution if not exists
+    if 'display' not in globals():
+        def display(df):
+            # If it's a spark dataframe, show it
+            if hasattr(df, 'show'):
+                df.show(5, truncate=False)
+            # If it's a pandas dataframe, print it
+            elif hasattr(df, 'head'):
+                print(df.head())
+            else:
+                print(df)
+
     parser = argparse.ArgumentParser(description="Challenger Task")
-    parser.add_argument("--model-name", required=True, help="Model name in registry")
-    parser.add_argument("--metric-threshold", type=float, default=2.0,
-                       help="Minimum improvement percentage to promote (default: 2.0)")
+    parser.add_argument("--model-name", help="Model name in registry")
+    parser.add_argument("--metric-threshold", type=float,
+                       help="Minimum improvement percentage to promote")
     
-    args = parser.parse_args()
+    try:
+        args, _ = parser.parse_known_args()
+    except:
+        args = None
+    
+    # Get parameters (priority: args > widgets)
+    model_name = get_arg("model-name", args=args)
+    metric_threshold = get_arg("metric-threshold", default=2.0, args=args)
+    
+    if metric_threshold is not None:
+        metric_threshold = float(metric_threshold)
+    
+    if not model_name:
+        raise ValueError("Model name is required")
     
     challenger(
-        model_name=args.model_name,
-        metric_threshold=args.metric_threshold,
+        model_name=model_name,
+        metric_threshold=metric_threshold,
     )
 
 

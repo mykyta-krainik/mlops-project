@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Drift Detection Task for Databricks Monitoring.
 
@@ -231,20 +232,66 @@ def detect_drift(catalog: str, schema: str, lookback_days: int = 7):
     return drift_detected
 
 
+def get_arg(key, default=None, args=None):
+    """Get argument from argparse args or dbutils widgets."""
+    # Try getting from args first (local execution)
+    if args and hasattr(args, key.replace('-', '_')) and getattr(args, key.replace('-', '_')) is not None:
+        return getattr(args, key.replace('-', '_'))
+    
+    # Try getting from dbutils widgets (Databricks execution)
+    try:
+        from pyspark.dbutils import DBUtils
+        spark = SparkSession.builder.getOrCreate()
+        dbutils = DBUtils(spark)
+        val = dbutils.widgets.get(key)
+        if val:
+            return val
+    except Exception:
+        pass
+        
+    return default
+
+
 def main():
     """Main entry point."""
+    # Define display for local execution if not exists
+    if 'display' not in globals():
+        def display(df):
+            # If it's a spark dataframe, show it
+            if hasattr(df, 'show'):
+                df.show(5, truncate=False)
+            # If it's a pandas dataframe, print it
+            elif hasattr(df, 'head'):
+                print(df.head())
+            else:
+                print(df)
+
     parser = argparse.ArgumentParser(description="Drift Detection Task")
-    parser.add_argument("--catalog", required=True, help="Unity Catalog name")
-    parser.add_argument("--schema", required=True, help="Schema name")
-    parser.add_argument("--lookback-days", type=int, default=7,
+    parser.add_argument("--catalog", help="Unity Catalog name")
+    parser.add_argument("--schema", help="Schema name")
+    parser.add_argument("--lookback-days", type=int,
                        help="Number of days to look back for current data")
     
-    args = parser.parse_args()
+    try:
+        args, _ = parser.parse_known_args()
+    except:
+        args = None
+    
+    # Get parameters (priority: args > widgets)
+    catalog = get_arg("catalog", args=args)
+    schema = get_arg("schema", args=args)
+    lookback_days = get_arg("lookback-days", default=7, args=args)
+    
+    if lookback_days is not None:
+        lookback_days = int(lookback_days)
+    
+    if not catalog or not schema:
+        raise ValueError("Catalog and schema are required parameters")
     
     detect_drift(
-        catalog=args.catalog,
-        schema=args.schema,
-        lookback_days=args.lookback_days,
+        catalog=catalog,
+        schema=schema,
+        lookback_days=lookback_days,
     )
 
 

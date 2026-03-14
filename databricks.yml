@@ -73,93 +73,71 @@ resources:
         on_failure:
           - ${var.notification_email}
       
-      # Job cluster for Spark-based tasks
-      job_clusters:
-        - job_cluster_key: spark_cluster
-          new_cluster:
-            spark_version: 14.3.x-scala2.12
-            node_type_id: ${var.cluster_node_type}
-            num_workers: 1
-            spark_conf:
-              spark.databricks.delta.preview.enabled: "true"
+      # Serverless compute environment
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/*.whl
+              - evidently
       
-      # Tasks using job cluster for Spark workloads
+      # Tasks using serverless compute with notebook jobs
       tasks:
         # Task 1: Data Ingestion
         - task_key: data_ingestion
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/tasks/data_ingestion.py
-            parameters:
-              - "--catalog=${var.catalog_name}"
-              - "--schema=${var.schema_name}"
-          libraries:
-            - pypi:
-                package: pyspark
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/tasks/data_ingestion.py
+            base_parameters:
+              catalog: ${var.catalog_name}
+              schema: ${var.schema_name}
         
         # Task 2: Feature Engineering
         - task_key: feature_engineering
           depends_on:
             - task_key: data_ingestion
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/tasks/feature_engineering.py
-            parameters:
-              - "--catalog=${var.catalog_name}"
-              - "--schema=${var.schema_name}"
-          libraries:
-            - pypi:
-                package: pyspark
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/tasks/feature_engineering.py
+            base_parameters:
+              catalog: ${var.catalog_name}
+              schema: ${var.schema_name}
         
         # Task 3: Model Training
         - task_key: train_model
           depends_on:
             - task_key: feature_engineering
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/tasks/train_model.py
-            parameters:
-              - "--catalog=${var.catalog_name}"
-              - "--schema=${var.schema_name}"
-              - "--model-type=${var.model_type}"
-              - "--model-name=${var.model_name}"
-          libraries:
-            - pypi:
-                package: mlflow
-            - pypi:
-                package: scikit-learn
-            - pypi:
-                package: pyspark
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/tasks/train_model.py
+            base_parameters:
+              catalog: ${var.catalog_name}
+              schema: ${var.schema_name}
+              model-type: ${var.model_type}
+              model-name: ${var.model_name}
         
         # Task 4: Challenger (Model Comparison & Promotion)
         - task_key: challenger
           depends_on:
             - task_key: train_model
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/tasks/challenger.py
-            parameters:
-              - "--model-name=${var.model_name}"
-              - "--metric-threshold=${var.metric_threshold}"
-          libraries:
-            - pypi:
-                package: mlflow
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/tasks/challenger.py
+            base_parameters:
+              model-name: ${var.model_name}
+              metric-threshold: ${var.metric_threshold}
         
         # Task 5: Deploy Model to Serving
         - task_key: deploy_model
           depends_on:
             - task_key: challenger
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/tasks/deploy_model.py
-            parameters:
-              - "--model-name=${var.model_name}"
-              - "--endpoint-name=toxic-comments-serving"
-          libraries:
-            - pypi:
-                package: mlflow
-            - pypi:
-                package: databricks-sdk
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/tasks/deploy_model.py
+            base_parameters:
+              model-name: ${var.model_name}
+              endpoint-name: toxic-comments-serving
       
       # Timeout and retry configuration
       timeout_seconds: 7200  # 2 hours
@@ -174,27 +152,23 @@ resources:
         timezone_id: "UTC"
         pause_status: UNPAUSED
       
-      # Job cluster for Spark-based drift detection
-      job_clusters:
-        - job_cluster_key: spark_cluster
-          new_cluster:
-            spark_version: 14.3.x-scala2.12
-            node_type_id: ${var.cluster_node_type}
-            num_workers: 1
+      # Serverless compute environment
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/*.whl
+              - evidently
       
       tasks:
         - task_key: drift_detection
-          job_cluster_key: spark_cluster
-          spark_python_task:
-            python_file: databricks/monitoring/drift_detection.py
-            parameters:
-              - "--catalog=${var.catalog_name}"
-              - "--schema=${var.schema_name}"
-          libraries:
-            - pypi:
-                package: evidently
-            - pypi:
-                package: pyspark
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: databricks/monitoring/drift_detection.py
+            base_parameters:
+              catalog: ${var.catalog_name}
+              schema: ${var.schema_name}
       
       timeout_seconds: 3600  # 1 hour
       max_concurrent_runs: 1

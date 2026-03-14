@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Feature Engineering Task for Databricks Lakeflow Pipeline.
 
@@ -88,23 +89,59 @@ def engineer_features(catalog: str, schema: str):
     print(f"✓ Feature engineering complete: {processed_table}")
     
     # Show sample
-    print("\nSample processed data:")
-    spark.table(processed_table).select(
-        "id", "comment_text", "processed_text", "text_length", "word_count"
-    ).show(5, truncate=False)
+    if 'display' in globals():
+        print("\nSample processed data:")
+        display(spark.table(processed_table).select(
+            "id", "comment_text", "processed_text", "text_length", "word_count"
+        ))
+
+
+def get_arg(key, default=None, args=None):
+    """Get argument from argparse args or dbutils widgets."""
+    # Try getting from args first (local execution)
+    if args and hasattr(args, key.replace('-', '_')) and getattr(args, key.replace('-', '_')) is not None:
+        return getattr(args, key.replace('-', '_'))
+    
+    # Try getting from dbutils widgets (Databricks execution)
+    try:
+        from pyspark.dbutils import DBUtils
+        spark = SparkSession.builder.getOrCreate()
+        dbutils = DBUtils(spark)
+        val = dbutils.widgets.get(key)
+        if val:
+            return val
+    except Exception:
+        pass
+        
+    return default
 
 
 def main():
     """Main entry point."""
+    # Define display for local execution if not exists
+    if 'display' not in globals():
+        def display(df):
+            df.show(5, truncate=False)
+
     parser = argparse.ArgumentParser(description="Feature Engineering Task")
-    parser.add_argument("--catalog", required=True, help="Unity Catalog name")
-    parser.add_argument("--schema", required=True, help="Schema name")
+    parser.add_argument("--catalog", help="Unity Catalog name")
+    parser.add_argument("--schema", help="Schema name")
     
-    args = parser.parse_args()
+    try:
+        args, _ = parser.parse_known_args()
+    except:
+        args = None
+    
+    # Get parameters (priority: args > widgets)
+    catalog = get_arg("catalog", args=args)
+    schema = get_arg("schema", args=args)
+    
+    if not catalog or not schema:
+        raise ValueError("Catalog and schema are required parameters")
     
     engineer_features(
-        catalog=args.catalog,
-        schema=args.schema,
+        catalog=catalog,
+        schema=schema,
     )
 
 

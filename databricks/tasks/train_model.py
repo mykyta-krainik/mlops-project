@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Model Training Task for Databricks Lakeflow Pipeline.
 
@@ -221,22 +222,66 @@ def train_model(catalog: str, schema: str, model_type: str, model_name: str):
         )
 
 
+def get_arg(key, default=None, args=None):
+    """Get argument from argparse args or dbutils widgets."""
+    # Try getting from args first (local execution)
+    if args and hasattr(args, key.replace('-', '_')) and getattr(args, key.replace('-', '_')) is not None:
+        return getattr(args, key.replace('-', '_'))
+    
+    # Try getting from dbutils widgets (Databricks execution)
+    try:
+        from pyspark.dbutils import DBUtils
+        spark = SparkSession.builder.getOrCreate()
+        dbutils = DBUtils(spark)
+        val = dbutils.widgets.get(key)
+        if val:
+            return val
+    except Exception:
+        pass
+        
+    return default
+
+
 def main():
     """Main entry point."""
+    # Define display for local execution if not exists
+    if 'display' not in globals():
+        def display(df):
+            # If it's a spark dataframe, show it
+            if hasattr(df, 'show'):
+                df.show(5, truncate=False)
+            # If it's a pandas dataframe, print it
+            elif hasattr(df, 'head'):
+                print(df.head())
+            else:
+                print(df)
+
     parser = argparse.ArgumentParser(description="Model Training Task")
-    parser.add_argument("--catalog", required=True, help="Unity Catalog name")
-    parser.add_argument("--schema", required=True, help="Schema name")
-    parser.add_argument("--model-type", required=True, choices=["baseline", "improved"],
+    parser.add_argument("--catalog", help="Unity Catalog name")
+    parser.add_argument("--schema", help="Schema name")
+    parser.add_argument("--model-type", choices=["baseline", "improved"],
                        help="Model type to train")
-    parser.add_argument("--model-name", required=True, help="Model name for registry")
+    parser.add_argument("--model-name", help="Model name for registry")
     
-    args = parser.parse_args()
+    try:
+        args, _ = parser.parse_known_args()
+    except:
+        args = None
+    
+    # Get parameters (priority: args > widgets)
+    catalog = get_arg("catalog", args=args)
+    schema = get_arg("schema", args=args)
+    model_type = get_arg("model-type", args=args)
+    model_name = get_arg("model-name", args=args)
+    
+    if not all([catalog, schema, model_type, model_name]):
+        raise ValueError("Missing required parameters")
     
     train_model(
-        catalog=args.catalog,
-        schema=args.schema,
-        model_type=args.model_type,
-        model_name=args.model_name,
+        catalog=catalog,
+        schema=schema,
+        model_type=model_type,
+        model_name=model_name,
     )
 
 

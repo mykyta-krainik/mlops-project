@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Data Ingestion Task for Databricks Lakeflow Pipeline.
 
@@ -104,8 +105,9 @@ def ingest_data(catalog: str, schema: str, source_path: str = None):
     print(f"✓ Data ingestion complete: {table_name}")
     
     # Show sample
-    print("\nSample data:")
-    spark.table(table_name).show(5, truncate=False)
+    if 'display' in globals():
+        print("\nSample data:")
+        display(spark.table(table_name))
 
 
 def create_sample_data(spark):
@@ -130,19 +132,57 @@ def create_sample_data(spark):
     return spark.createDataFrame(data, schema)
 
 
+def get_arg(key, default=None, args=None):
+    """Get argument from argparse args or dbutils widgets."""
+    # Try getting from args first (local execution)
+    if args and hasattr(args, key.replace('-', '_')) and getattr(args, key.replace('-', '_')) is not None:
+        return getattr(args, key.replace('-', '_'))
+    
+    # Try getting from dbutils widgets (Databricks execution)
+    try:
+        from pyspark.dbutils import DBUtils
+        spark = SparkSession.builder.getOrCreate()
+        dbutils = DBUtils(spark)
+        val = dbutils.widgets.get(key)
+        if val:
+            return val
+    except Exception:
+        pass
+        
+    return default
+
+
 def main():
     """Main entry point."""
+    # Define display for local execution if not exists
+    if 'display' not in globals():
+        def display(df):
+            df.show(5, truncate=False)
+    
+    # Parse args for local execution
     parser = argparse.ArgumentParser(description="Data Ingestion Task")
-    parser.add_argument("--catalog", required=True, help="Unity Catalog name")
-    parser.add_argument("--schema", required=True, help="Schema name")
+    parser.add_argument("--catalog", help="Unity Catalog name")
+    parser.add_argument("--schema", help="Schema name")
     parser.add_argument("--source-path", help="Optional source path (S3 or local)")
     
-    args = parser.parse_args()
+    # Only parse args if arguments are passed (avoid error in notebook if different args passed)
+    try:
+        args, _ = parser.parse_known_args()
+    except:
+        args = None
+    
+    # Get parameters (priority: args > widgets)
+    catalog = get_arg("catalog", args=args)
+    schema = get_arg("schema", args=args)
+    source_path = get_arg("source-path", args=args)
+    
+    if not catalog or not schema:
+        raise ValueError("Catalog and schema are required parameters")
     
     ingest_data(
-        catalog=args.catalog,
-        schema=args.schema,
-        source_path=args.source_path,
+        catalog=catalog,
+        schema=schema,
+        source_path=source_path,
     )
 
 
