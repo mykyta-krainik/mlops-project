@@ -1,0 +1,113 @@
+name: Scheduled jobs
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"   # every Monday 02:00 UTC — weekly retrain
+    - cron: "0 8 * * *"    # every day 08:00 UTC   — drift + SLO check
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, retrain, drift-check]
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write   # for gh issue create on drift/SLO failure
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  retrain:
+    name: Weekly retrain
+    if: >
+      github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'retrain')
+      || (github.event_name == 'schedule' && github.event.schedule == '0 2 * * 1')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install boto3 sagemaker python-dotenv
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Trigger retrain pipeline
+        env:
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+          ECR_IMAGE_URI: ${{ secrets.ECR_REGISTRY }}/mlops-toxic:latest
+          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_RAW_BUCKET: mlops-toxic-raw
+          AWS_PROCESSED_BUCKET: mlops-toxic-processed
+          AWS_MODELS_BUCKET: mlops-toxic-models
+          AWS_PIPELINE_BUCKET: mlops-toxic-pipeline
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          python pipelines/run_pipeline.py \
+            --run-name "scheduled-$(date +%Y%m%d)" \
+            --wait
+
+  drift-check:
+    name: Daily drift + SLO check
+    if: >
+      github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'drift-check')
+      || (github.event_name == 'schedule' && github.event.schedule == '0 8 * * *')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install boto3 evidently pandas pyarrow python-dotenv
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run Evidently drift check
+        id: drift
+        continue-on-error: true
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_PIPELINE_BUCKET: mlops-toxic-pipeline
+          AWS_PROCESSED_BUCKET: mlops-toxic-processed
+        run: python monitoring/drift_check.py
+
+      - name: Run SLO check
+        id: slo
+        continue-on-error: true
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: python monitoring/slo_check.py
+
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report-${{ github.run_id }}
+          path: /tmp/drift_report*.html
+
+      - name: Create GitHub issue on failure
+        if: steps.drift.outcome == 'failure' || steps.slo.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="[Alert] Drift/SLO check failed $(date +%Y-%m-%d)"
+          BODY="Drift or SLO check failed in scheduled run ${{ github.run_id }}.\n\nSee artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue create --title "$TITLE" --body "$BODY" --label "monitoring"
+
+      - name: Fail workflow if checks failed
+        if: steps.drift.outcome == 'failure' || steps.slo.outcome == 'failure'
+        run: exit 1

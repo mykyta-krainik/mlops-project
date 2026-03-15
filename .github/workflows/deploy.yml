@@ -1,0 +1,143 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_uri:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      image_uri:
+        description: "ECR image URI (leave blank to use latest)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  terraform:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.6"
+      - name: Terraform plan + apply
+        working-directory: terraform
+        env:
+          TF_VAR_github_org: ${{ github.repository_owner }}
+          TF_VAR_github_repo: ${{ github.event.repository.name }}
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          terraform init
+          terraform plan -out=tfplan
+          terraform apply -auto-approve tfplan
+
+  trigger-pipeline:
+    name: Trigger SageMaker Pipeline
+    runs-on: ubuntu-latest
+    outputs:
+      execution_arn: ${{ steps.run.outputs.execution_arn }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install boto3 sagemaker python-dotenv
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run pipeline
+        id: run
+        env:
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+          ECR_IMAGE_URI: ${{ inputs.image_uri || format('{0}/mlops-toxic:latest', secrets.ECR_REGISTRY) }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_RAW_BUCKET: mlops-toxic-raw
+          AWS_PROCESSED_BUCKET: mlops-toxic-processed
+          AWS_MODELS_BUCKET: mlops-toxic-models
+          AWS_PIPELINE_BUCKET: mlops-toxic-pipeline
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          python pipelines/run_pipeline.py \
+            --image-uri "$ECR_IMAGE_URI" \
+            --run-name "ci-${{ github.sha }}" \
+            --wait
+
+  load-test-staging:
+    name: Load test staging endpoint
+    needs: trigger-pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install locust boto3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run Locust against staging
+        env:
+          SAGEMAKER_ENDPOINT_NAME: mlops-toxic-staging
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          locust --headless \
+            --locustfile locustfile.py \
+            -u 100 -r 10 \
+            --run-time 2m \
+            --csv /tmp/locust
+      - name: Check SLO results
+        run: python scripts/check_load_test_results.py --csv /tmp/locust_stats.csv
+      - name: Upload load test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locust-report
+          path: /tmp/locust*.csv
+
+  promote-to-prod:
+    name: Promote to production
+    needs: load-test-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install boto3 sagemaker mlflow python-dotenv
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Promote green → prod
+        env:
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_PIPELINE_BUCKET: mlops-toxic-pipeline
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python src/promote.py --to-prod

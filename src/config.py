@@ -107,6 +107,30 @@ class ModelConfig:
 
 
 @dataclass
+class AWSConfig:
+    region: str = field(default_factory=lambda: os.getenv("AWS_REGION", "us-east-1"))
+    raw_bucket: str = field(default_factory=lambda: os.getenv("AWS_RAW_BUCKET", "mlops-toxic-raw"))
+    processed_bucket: str = field(
+        default_factory=lambda: os.getenv("AWS_PROCESSED_BUCKET", "mlops-toxic-processed")
+    )
+    models_bucket: str = field(default_factory=lambda: os.getenv("AWS_MODELS_BUCKET", "mlops-toxic-models"))
+    pipeline_bucket: str = field(
+        default_factory=lambda: os.getenv("AWS_PIPELINE_BUCKET", "mlops-toxic-pipeline")
+    )
+
+
+@dataclass
+class SageMakerConfig:
+    role_arn: str = field(default_factory=lambda: os.getenv("SAGEMAKER_ROLE_ARN", ""))
+    pipeline_name: str = "toxic-comment-pipeline"
+    staging_endpoint: str = "toxic-comment-staging"
+    prod_endpoint: str = "toxic-comment-prod"
+    instance_type: str = field(default_factory=lambda: os.getenv("SM_INSTANCE_TYPE", "ml.t3.medium"))
+    ecr_image_uri: str = field(default_factory=lambda: os.getenv("ECR_IMAGE_URI", ""))
+    f1_threshold: float = field(default_factory=lambda: float(os.getenv("F1_THRESHOLD", "0.02")))
+
+
+@dataclass
 class Config:
     minio: MinioConfig = field(default_factory=MinioConfig)
     mlflow: MLflowConfig = field(default_factory=MLflowConfig)
@@ -114,6 +138,8 @@ class Config:
     moderation: ModerationThresholds = field(default_factory=ModerationThresholds)
     api: APIConfig = field(default_factory=APIConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    aws: AWSConfig = field(default_factory=AWSConfig)
+    sagemaker: SageMakerConfig = field(default_factory=SageMakerConfig)
 
 
 config = Config()
