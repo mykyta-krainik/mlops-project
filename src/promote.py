@@ -280,12 +280,16 @@ def promote_to_prod(run_name: str) -> None:
 
     _wait_for_endpoint(sm, prod_endpoint)
 
-    # Update staging to 100% green (clean up blue)
-    sm.update_endpoint_weights_and_capacities(
-        EndpointName=staging_endpoint,
-        DesiredWeightsAndCapacities=[{"VariantName": "green", "DesiredWeight": 1.0}],
-    )
-    print(f"Staging '{staging_endpoint}' shifted to 100% green")
+    staging_variant_names = [v["VariantName"] for v in variants]
+    
+    if "green" in staging_variant_names:
+        sm.update_endpoint_weights_and_capacities(
+            EndpointName=staging_endpoint,
+            DesiredWeightsAndCapacities=[{"VariantName": "green", "DesiredWeight": 1.0}],
+        )
+        print(f"Staging '{staging_endpoint}' shifted to 100% green")
+    else:
+        print(f"Staging '{staging_endpoint}' has no green variant (first run) — skipping weight shift")
 
 
 def simulate_failure() -> None:
