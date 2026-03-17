@@ -18,8 +18,6 @@ import sys
 import time
 from pathlib import Path
 
-import boto3
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipelines.pipeline import get_pipeline
@@ -91,11 +89,23 @@ def main() -> None:
         return
 
     # ── Poll until terminal state ─────────────────────────────────────────────
-    sm = boto3.client("sagemaker", region_name=config.aws.region)
+    # Use execution.describe() (same session as pipeline.start()) to avoid any
+    # region/credentials mismatch that would occur with a separate boto3 client.
+    import botocore.exceptions
+
     print(f"Polling every {POLL_INTERVAL}s…")
 
+    resp = None
     while True:
-        resp = sm.describe_pipeline_execution(PipelineExecutionArn=execution.arn)
+        try:
+            resp = execution.describe()
+        except botocore.exceptions.ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code in ("ResourceNotFound", "ValidationException"):
+                print("  Execution not yet visible, retrying…")
+                time.sleep(POLL_INTERVAL)
+                continue
+            raise
         status = resp["PipelineExecutionStatus"]
         print(f"  Status: {status}")
 
@@ -107,8 +117,24 @@ def main() -> None:
     if status == "Succeeded":
         print(f"\nPipeline execution SUCCEEDED: {execution.arn}")
     else:
-        failure_reason = resp.get("FailureReason", "unknown")
+        failure_reason = resp.get("FailureReason", "unknown") if resp else "unknown"
         print(f"\nPipeline execution {status}: {failure_reason}")
+
+        # Print per-step failure details so the root cause is visible in CI logs
+        try:
+            steps_resp = execution.list_steps()
+            # v3 SDK returns a list directly; v2 returned a dict with "PipelineExecutionSteps"
+            steps = steps_resp if isinstance(steps_resp, list) else steps_resp.get("PipelineExecutionSteps", [])
+            failed = [s for s in steps if s.get("StepStatus") == "Failed"]
+            for s in failed:
+                print(f"\n  Failed step: {s.get('StepName')}")
+                print(f"    Failure reason: {s.get('FailureReason', 'n/a')}")
+                metadata = s.get("Metadata", {})
+                for key, val in metadata.items():
+                    print(f"    {key}: {val}")
+        except Exception as list_exc:
+            print(f"  (Could not retrieve step details: {list_exc})")
+
         sys.exit(1)
 
 

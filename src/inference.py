@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, "/app")
 
-from src.api.moderation import ModerationEngine
+from src.api.moderation import ModerationDecider as ModerationEngine
 from src.config import config
 from src.data.preprocessing import TextPreprocessor
 from src.models.baseline import ToxicCommentClassifier

@@ -70,6 +70,41 @@ def _read_f1_from_s3(s3_uri: str) -> float:
         return 0.0
 
 
+def run_evaluate(baseline: dict, improved: dict, model_package_group: str) -> dict:
+    """Compare candidate metrics against each other and production. Returns evaluation dict."""
+    baseline_f1 = float(baseline["f1_macro"])
+    improved_f1 = float(improved["f1_macro"])
+
+    print(f"Baseline f1_macro:  {baseline_f1:.4f}")
+    print(f"Improved f1_macro:  {improved_f1:.4f}")
+
+    if improved_f1 >= baseline_f1:
+        best_model = "improved"
+        best_f1 = improved_f1
+        best_model_s3_uri = improved["model_s3_uri"]
+    else:
+        best_model = "baseline"
+        best_f1 = baseline_f1
+        best_model_s3_uri = baseline["model_s3_uri"]
+
+    print(f"Best candidate:     {best_model} ({best_f1:.4f})")
+
+    prod_f1 = get_prod_f1(model_package_group)
+    print(f"Current prod f1:    {prod_f1:.4f}")
+    print(f"Threshold:          {config.sagemaker.f1_threshold}")
+
+    return {
+        "baseline_f1_macro": baseline_f1,
+        "improved_f1_macro": improved_f1,
+        "best_model": best_model,
+        "best_f1_macro": best_f1,
+        "best_model_s3_uri": best_model_s3_uri,
+        "prod_f1_macro": prod_f1,
+        "f1_threshold": config.sagemaker.f1_threshold,
+        "exceeds_threshold": best_f1 >= prod_f1 + config.sagemaker.f1_threshold,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", type=str, default="/opt/ml/processing/input")

@@ -1,0 +1,630 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  mlops-toxic — all AWS resources for the toxic-comment MLOps project.
+  Single stack; no bootstrapping required (state is managed by CloudFormation).
+
+# ── Parameters ──────────────────────────────────────────────────────────────
+Parameters:
+  Project:
+    Type: String
+    Default: mlops-toxic
+    Description: Resource name prefix used across the stack.
+
+  GitHubOrg:
+    Type: String
+    Description: GitHub organisation or user name (for OIDC trust policy).
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name (for OIDC trust policy).
+
+  AlertEmail:
+    Type: String
+    Description: E-mail address for CloudWatch alarm notifications.
+
+  SageMakerInstanceType:
+    Type: String
+    Default: ml.m5.large
+    Description: Instance type for SageMaker endpoints.
+
+  DriftThreshold:
+    Type: String
+    Default: "0.3"
+    Description: Evidently drift score above which the DriftAlarm fires.
+
+# ── Resources ────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── S3 Buckets ─────────────────────────────────────────────────────────────
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Project}-raw"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+
+  ProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Project}-processed"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ModelsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Project}-models"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+
+  PipelineBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Project}-pipeline"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ── ECR ────────────────────────────────────────────────────────────────────
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref Project
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  # ── IAM ────────────────────────────────────────────────────────────────────
+
+  SageMakerExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Project}-sagemaker-exec"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: ProjectS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawBucket.Arn
+                  - !Sub "${RawBucket.Arn}/*"
+                  - !GetAtt ProcessedBucket.Arn
+                  - !Sub "${ProcessedBucket.Arn}/*"
+                  - !GetAtt ModelsBucket.Arn
+                  - !Sub "${ModelsBucket.Arn}/*"
+                  - !GetAtt PipelineBucket.Arn
+                  - !Sub "${PipelineBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Project}*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+
+  # NOTE: AWS::IAM::OIDCProvider will fail if the provider already exists in
+  # the account (each account can have only one GitHub OIDC provider).
+  # If you hit "Provider with url https://token.actions.githubusercontent.com
+  # already exists", import the existing provider into the stack:
+  #   aws cloudformation import-resources-to-change-set ...
+  # or remove this resource and set GitHubActionsRole's principal manually.
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Project}-github-actions"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+      Policies:
+        - PolicyName: CICDPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreatePipeline
+                  - sagemaker:UpdatePipeline
+                  - sagemaker:StartPipelineExecution
+                  - sagemaker:DescribePipelineExecution
+                  - sagemaker:ListPipelineExecutionSteps
+                  - sagemaker:CreateEndpoint
+                  - sagemaker:UpdateEndpoint
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:CreateEndpointConfig
+                  - sagemaker:DeleteEndpointConfig
+                  - sagemaker:CreateModel
+                  - sagemaker:RegisterModel
+                  - sagemaker:DescribeModelPackageGroup
+                  - sagemaker:CreateModelPackageGroup
+                  - sagemaker:CreateModelPackage
+                  - sagemaker:UpdateModelPackage
+                  - sagemaker:ListModelPackages
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt PipelineBucket.Arn
+                  - !Sub "${PipelineBucket.Arn}/*"
+                  - !GetAtt ModelsBucket.Arn
+                  - !Sub "${ModelsBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt SageMakerExecRole.Arn
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
+  LambdaExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Project}-lambda-exec"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaActions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:UpdateEndpoint
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:StartPipelineExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/mlops-toxic/*"
+
+  # ── SageMaker ──────────────────────────────────────────────────────────────
+  # Endpoints and endpoint configs are NOT managed here.
+  # promote.py creates/updates them with the real trained model after each
+  # pipeline run. Only the model package group (registry) is provisioned here.
+
+  ModelPackageGroup:
+    Type: AWS::SageMaker::ModelPackageGroup
+    Properties:
+      ModelPackageGroupName: !Sub "${Project}-models"
+      ModelPackageGroupDescription: "Toxic comment classifier model registry"
+
+  # ── CloudWatch ─────────────────────────────────────────────────────────────
+
+  StagingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${Project}-staging"
+      RetentionInDays: 30
+
+  ProdLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${Project}-prod"
+      RetentionInDays: 90
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${Project}-monitoring"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Invocations",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/SageMaker", "Invocations", "EndpointName", "${Project}-staging", "VariantName", "blue"],
+                  ["AWS/SageMaker", "Invocations", "EndpointName", "${Project}-prod", "VariantName", "blue"]
+                ],
+                "period": 60, "stat": "Sum", "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Latency p50 / p99 (µs)",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${Project}-prod", "VariantName", "blue", {"stat": "p50"}],
+                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${Project}-prod", "VariantName", "blue", {"stat": "p99"}]
+                ],
+                "period": 60, "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "4xx / 5xx Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/SageMaker", "Invocation4XXErrors", "EndpointName", "${Project}-prod", "VariantName", "blue"],
+                  ["AWS/SageMaker", "Invocation5XXErrors", "EndpointName", "${Project}-prod", "VariantName", "blue"]
+                ],
+                "period": 60, "stat": "Sum", "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Drift Score",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["${Project}/monitoring", "DriftScore", "Endpoint", "${Project}-prod"]
+                ],
+                "period": 3600, "stat": "Maximum", "view": "timeSeries"
+              }
+            }
+          ]
+        }
+
+  HighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Project}-high-latency"
+      AlarmDescription: "p99 ModelLatency on prod exceeds 500ms SLO"
+      Namespace: AWS/SageMaker
+      MetricName: ModelLatency
+      Dimensions:
+        - Name: EndpointName
+          Value: !Sub "${Project}-prod"
+        - Name: VariantName
+          Value: blue
+      ExtendedStatistic: p99
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 500000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+        - !GetAtt RollbackFunction.Arn
+
+  HighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Project}-high-error-rate"
+      AlarmDescription: "Invocation error rate on prod exceeds 1% SLO"
+      Metrics:
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/SageMaker
+              MetricName: Invocations
+              Dimensions:
+                - Name: EndpointName
+                  Value: !Sub "${Project}-prod"
+                - Name: VariantName
+                  Value: blue
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: errors4xx
+          MetricStat:
+            Metric:
+              Namespace: AWS/SageMaker
+              MetricName: Invocation4XXErrors
+              Dimensions:
+                - Name: EndpointName
+                  Value: !Sub "${Project}-prod"
+                - Name: VariantName
+                  Value: blue
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: errors5xx
+          MetricStat:
+            Metric:
+              Namespace: AWS/SageMaker
+              MetricName: Invocation5XXErrors
+              Dimensions:
+                - Name: EndpointName
+                  Value: !Sub "${Project}-prod"
+                - Name: VariantName
+                  Value: blue
+            Period: 60
+            Stat: Sum
+          ReturnData: false
+        - Id: error_rate
+          Expression: "100*(errors4xx+errors5xx)/invocations"
+          Label: ErrorRatePct
+          ReturnData: true
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 1
+      EvaluationPeriods: 3
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  DriftAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Project}-drift-detected"
+      AlarmDescription: "Evidently drift score exceeds threshold — trigger retrain"
+      Namespace: !Sub "${Project}/monitoring"
+      MetricName: DriftScore
+      Dimensions:
+        - Name: Endpoint
+          Value: !Sub "${Project}-prod"
+      Statistic: Maximum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: !Ref DriftThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+        - !GetAtt RetrainTriggerFunction.Arn
+
+  # ── SNS ────────────────────────────────────────────────────────────────────
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Project}-alerts"
+
+  AlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ── Lambda ─────────────────────────────────────────────────────────────────
+
+  RollbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Project}-rollback"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          ENDPOINT_NAME: !Sub "${Project}-prod"
+          FALLBACK_CONFIG_SSM: !Sub "/mlops-toxic/prod/fallback-config"
+      Code:
+        ZipFile: |
+          import os, boto3
+
+          def handler(event, context):
+              endpoint = os.environ["ENDPOINT_NAME"]
+              ssm_key  = os.environ["FALLBACK_CONFIG_SSM"]
+              ssm = boto3.client("ssm")
+              sm  = boto3.client("sagemaker")
+              try:
+                  config = ssm.get_parameter(Name=ssm_key)["Parameter"]["Value"]
+              except ssm.exceptions.ParameterNotFound:
+                  print(f"No fallback config registered at {ssm_key}, skipping rollback")
+                  return
+              resp = sm.describe_endpoint(EndpointName=endpoint)
+              if resp["EndpointStatus"] in ("InService", "Failed"):
+                  sm.update_endpoint(EndpointName=endpoint, EndpointConfigName=config)
+                  print(f"Rolled back {endpoint} to {config}")
+              else:
+                  print(f"Endpoint {endpoint} status={resp['EndpointStatus']}, skipping rollback")
+
+  RollbackPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt RollbackFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: lambda.alarms.cloudwatch.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  RetrainTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Project}-retrain-trigger"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          PIPELINE_NAME: toxic-comment-pipeline
+          AWS_SAGEMAKER_REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import os, boto3
+
+          def handler(event, context):
+              pipeline = os.environ["PIPELINE_NAME"]
+              region = os.environ.get("AWS_SAGEMAKER_REGION")
+              sm = boto3.client("sagemaker", region_name=region)
+              resp = sm.start_pipeline_execution(
+                  PipelineName=pipeline,
+                  PipelineExecutionDescription="auto-retrain triggered by drift/new-data",
+              )
+              print(f"Started pipeline execution: {resp['PipelineExecutionArn']}")
+
+  RetrainEventBridgePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt RetrainTriggerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # ── EventBridge ────────────────────────────────────────────────────────────
+
+  NewDataRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${Project}-new-raw-data"
+      Description: "Fire retrain when a new object lands in the raw S3 bucket"
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref RawBucket
+      State: ENABLED
+      Targets:
+        - Id: RetrainTarget
+          Arn: !GetAtt RetrainTriggerFunction.Arn
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+Outputs:
+  ECRRepositoryUrl:
+    Description: ECR repository URI
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+    Export:
+      Name: !Sub "${AWS::StackName}-ECRRepositoryUrl"
+
+  SageMakerRoleArn:
+    Description: IAM role ARN for SageMaker execution
+    Value: !GetAtt SageMakerExecRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerRoleArn"
+
+  GitHubActionsRoleArn:
+    Description: IAM role ARN for GitHub Actions OIDC federation
+    Value: !GetAtt GitHubActionsRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GitHubActionsRoleArn"
+
+  StagingEndpointName:
+    Description: SageMaker staging endpoint name (created by promote.py after first pipeline run)
+    Value: !Sub "${Project}-staging"
+    Export:
+      Name: !Sub "${AWS::StackName}-StagingEndpointName"
+
+  ProdEndpointName:
+    Description: SageMaker production endpoint name (created by promote.py after first pipeline run)
+    Value: !Sub "${Project}-prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-ProdEndpointName"
+
+  SNSAlertTopicArn:
+    Description: SNS topic ARN for CloudWatch alarms
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-SNSAlertTopicArn"

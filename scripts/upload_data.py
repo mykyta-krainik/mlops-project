@@ -15,7 +15,6 @@ import sys
 from pathlib import Path
 
 import boto3
-import botocore
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -46,13 +45,6 @@ def main() -> None:
 
     s3 = boto3.client("s3", region_name=config.aws.region)
     bucket = args.bucket
-
-    # Verify bucket exists
-    try:
-        s3.head_bucket(Bucket=bucket)
-    except botocore.exceptions.ClientError as e:
-        print(f"ERROR: bucket '{bucket}' not accessible: {e}")
-        sys.exit(1)
 
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
     print(f"Uploading {local_path} ({file_size_mb:.1f} MB) → s3://{bucket}/{args.s3_key}")

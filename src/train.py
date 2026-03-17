@@ -16,6 +16,7 @@ SageMaker expects output (non-model) data at:
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -68,19 +69,112 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray)
     return metrics
 
 
-def setup_mlflow(run_name: str) -> None:
-    tracking_uri = config.mlflow.tracking_uri
-    if tracking_uri == "databricks":
-        os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
-        os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
-        mlflow.set_tracking_uri("databricks")
-    else:
-        mlflow.set_tracking_uri(tracking_uri)
+def run_train(
+    train_uri: str,
+    val_uri: str,
+    model_name: str,
+    models_bucket: str,
+    run_prefix: str,
+    max_features: int,
+    ngram_min: int,
+    ngram_max: int,
+    C: float,
+    max_iter: int,
+) -> dict:
+    """Download train/val data, train model, save ONNX to S3. Returns metrics + model URI."""
+    import tempfile
+    import boto3
 
-    experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
-    if experiment is None:
-        mlflow.create_experiment(config.mlflow.experiment_name)
-    mlflow.set_experiment(config.mlflow.experiment_name)
+    s3 = boto3.client("s3")
+
+    def _download(uri: str, local: Path) -> None:
+        parts = uri.replace("s3://", "").split("/", 1)
+        s3.download_file(parts[0], parts[1], str(local))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        train_csv = tmp / "train.csv"
+        val_csv = tmp / "validation.csv"
+        _download(train_uri, train_csv)
+        _download(val_uri, val_csv)
+
+        train_df = pd.read_csv(train_csv).dropna(subset=["comment_text"])
+        val_df = pd.read_csv(val_csv).dropna(subset=["comment_text"])
+
+        X_train = train_df["comment_text"].astype(str).tolist()
+        y_train = train_df[list(config.model.target_columns)].values
+        X_val = val_df["comment_text"].astype(str).tolist()
+        y_val = val_df[list(config.model.target_columns)].values
+
+        model = ToxicCommentClassifier(
+            max_features=max_features,
+            ngram_range=(ngram_min, ngram_max),
+            C=C,
+            max_iter=max_iter,
+        )
+
+        run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        mlflow_ok = setup_mlflow(run_name)
+
+        ctx = mlflow.start_run(run_name=run_name) if mlflow_ok else contextlib.nullcontext()
+        with ctx:
+            if mlflow_ok:
+                mlflow.log_params({
+                    **model.get_params(),
+                    "model_name": model_name,
+                    "train_samples": len(X_train),
+                    "val_samples": len(X_val),
+                })
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_val)
+            y_proba = model.predict_proba(X_val)
+            metrics = compute_metrics(y_val, y_pred, y_proba)
+            if mlflow_ok:
+                mlflow.log_metrics(metrics)
+
+            onnx_path = tmp / "model.onnx"
+            print("Exporting to ONNX…")
+            model.save_onnx(onnx_path)
+            if mlflow_ok:
+                mlflow.log_artifact(str(onnx_path))
+
+            # Package as model.tar.gz — SageMaker endpoint ModelDataUrl must be a tarball
+            import tarfile
+            tarball_path = tmp / "model.tar.gz"
+            with tarfile.open(tarball_path, "w:gz") as tar:
+                tar.add(onnx_path, arcname="model.onnx")
+
+            model_key = f"{run_prefix}/{model_name}/model.tar.gz"
+            s3.upload_file(str(tarball_path), models_bucket, model_key)
+            model_s3_uri = f"s3://{models_bucket}/{model_key}"
+            print(f"Uploaded model → {model_s3_uri}")
+
+            print("\nMetrics:")
+            for name, value in sorted(metrics.items()):
+                print(f"  {name}: {value:.4f}")
+
+    return {"model_name": model_name, "model_s3_uri": model_s3_uri, **metrics}
+
+
+def setup_mlflow(run_name: str) -> bool:
+    """Configure MLflow. Returns True if setup succeeded, False if unavailable."""
+    try:
+        tracking_uri = config.mlflow.tracking_uri
+        if tracking_uri == "databricks":
+            os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
+            os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
+            mlflow.set_tracking_uri("databricks")
+        else:
+            mlflow.set_tracking_uri(tracking_uri)
+
+        experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
+        if experiment is None:
+            mlflow.create_experiment(config.mlflow.experiment_name)
+        mlflow.set_experiment(config.mlflow.experiment_name)
+        return True
+    except Exception as e:
+        print(f"MLflow setup failed (tracking disabled): {e}")
+        return False
 
 
 def main() -> None:

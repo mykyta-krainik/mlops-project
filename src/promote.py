@@ -35,35 +35,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import config
 
 
-def setup_mlflow() -> None:
-    if config.mlflow.tracking_uri == "databricks":
-        import os
-
-        os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
-        os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
-        mlflow.set_tracking_uri("databricks")
-    else:
-        mlflow.set_tracking_uri(config.mlflow.tracking_uri)
+def setup_mlflow() -> bool:
+    """Configure MLflow. Returns True if setup succeeded."""
+    try:
+        if config.mlflow.tracking_uri == "databricks":
+            import os
+            os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
+            os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
+            mlflow.set_tracking_uri("databricks")
+            # Force legacy Workspace Model Registry (not Unity Catalog)
+            mlflow.set_registry_uri("databricks")
+        else:
+            mlflow.set_tracking_uri(config.mlflow.tracking_uri)
+        return True
+    except Exception as e:
+        print(f"MLflow setup failed (registration will be skipped): {e}")
+        return False
 
 
 def register_to_mlflow(model_s3_uri: str, metrics: dict, run_name: str) -> str:
     """Log model artifact from S3 to MLflow and register to Staging."""
-    setup_mlflow()
+    if not setup_mlflow():
+        return ""
 
-    with mlflow.start_run(run_name=f"register_{run_name}"):
-        mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, float)})
-        mlflow.log_param("model_s3_uri", model_s3_uri)
+    try:
+        with mlflow.start_run(run_name=f"register_{run_name}"):
+            mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, float)})
+            mlflow.log_param("model_s3_uri", model_s3_uri)
 
-        model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
-        registered = mlflow.register_model(model_uri, name="toxic-comment-classifier")
-        client = mlflow.tracking.MlflowClient()
-        client.transition_model_version_stage(
-            name="toxic-comment-classifier",
-            version=registered.version,
-            stage="Staging",
-        )
-        print(f"Registered to MLflow: version={registered.version}, stage=Staging")
-        return registered.version
+            model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
+            registered = mlflow.register_model(model_uri, name="toxic-comment-classifier")
+            client = mlflow.tracking.MlflowClient()
+            client.transition_model_version_stage(
+                name="toxic-comment-classifier",
+                version=registered.version,
+                stage="Staging",
+            )
+            print(f"Registered to MLflow: version={registered.version}, stage=Staging")
+            return registered.version
+    except Exception as e:
+        print(f"MLflow registration failed (non-fatal): {e}")
+        return ""
 
 
 def register_to_sagemaker(
@@ -97,7 +109,6 @@ def register_to_sagemaker(
                 {
                     "Image": ecr_image_uri,
                     "ModelDataUrl": model_s3_uri,
-                    "Environment": {"SAGEMAKER_PROGRAM": "inference.py"},
                 }
             ],
             "SupportedContentTypes": ["application/json"],
@@ -131,14 +142,38 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
 
     # Describe existing endpoint to get current model for blue variant
+    import botocore.exceptions
+    endpoint_exists = False
+    endpoint_failed = False
+    current_model_name = None
     try:
         existing = sm.describe_endpoint(EndpointName=endpoint_name)
-        current_config_name = existing["EndpointConfigName"]
-        current_config = sm.describe_endpoint_config(EndpointConfigName=current_config_name)
-        current_model_name = current_config["ProductionVariants"][0]["ModelName"]
-    except sm.exceptions.ClientError:
-        # Endpoint does not exist yet — create with 100% new model
-        current_model_name = None
+        endpoint_exists = True
+        if existing["EndpointStatus"] == "Failed":
+            endpoint_failed = True
+            print(f"Endpoint '{endpoint_name}' is in Failed state — will delete and recreate")
+        else:
+            current_config_name = existing["EndpointConfigName"]
+            current_config = sm.describe_endpoint_config(EndpointConfigName=current_config_name)
+            current_model_name = current_config["ProductionVariants"][0]["ModelName"]
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] not in ("ValidationException", "ResourceNotFoundException"):
+            raise
+
+    # Delete failed endpoint so we can create fresh
+    if endpoint_failed:
+        sm.delete_endpoint(EndpointName=endpoint_name)
+        print(f"Deleted failed endpoint '{endpoint_name}', waiting for deletion...")
+        import time as _time
+        for _ in range(60):
+            try:
+                sm.describe_endpoint(EndpointName=endpoint_name)
+                _time.sleep(10)
+            except botocore.exceptions.ClientError as e:
+                if e.response["Error"]["Code"] in ("ValidationException", "ResourceNotFoundException"):
+                    break
+                raise
+        endpoint_exists = False
 
     # Create new model resource
     new_model_name = f"{config.project if hasattr(config, 'project') else 'mlops-toxic'}-{run_name}"
@@ -148,7 +183,6 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
         PrimaryContainer={
             "Image": ecr_image_uri,
             "ModelDataUrl": model_s3_uri,
-            "Environment": {"SAGEMAKER_PROGRAM": "inference.py"},
         },
     )
 
@@ -186,11 +220,10 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
         ProductionVariants=variants,
     )
 
-    try:
-        sm.describe_endpoint(EndpointName=endpoint_name)
+    if endpoint_exists:
         sm.update_endpoint(EndpointName=endpoint_name, EndpointConfigName=config_name)
         print(f"Updated staging endpoint '{endpoint_name}' with canary config '{config_name}'")
-    except sm.exceptions.ClientError:
+    else:
         sm.create_endpoint(EndpointName=endpoint_name, EndpointConfigName=config_name)
         print(f"Created staging endpoint '{endpoint_name}' with config '{config_name}'")
 
@@ -301,7 +334,7 @@ def simulate_failure() -> None:
         time.sleep(30)
 
 
-def _wait_for_endpoint(sm_client, endpoint_name: str, timeout: int = 600) -> None:
+def _wait_for_endpoint(sm_client, endpoint_name: str, timeout: int = 1800) -> None:
     start = time.time()
     while True:
         status = sm_client.describe_endpoint(EndpointName=endpoint_name)["EndpointStatus"]

@@ -34,17 +34,10 @@ jobs:
           file: coverage.xml
           fail_ci_if_error: false
 
-  validate-terraform:
-    name: Terraform validate
+  validate-cloudformation:
+    name: CloudFormation lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.6"
-      - run: terraform fmt -check -recursive terraform/
-      - name: Terraform validate (no backend)
-        working-directory: terraform
-        run: |
-          terraform init -backend=false
-          terraform validate
+      - run: pip install cfn-lint
+      - run: cfn-lint cloudformation/stack.yaml

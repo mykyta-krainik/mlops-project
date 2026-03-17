@@ -21,8 +21,8 @@ env:
   AWS_REGION: us-east-1
 
 jobs:
-  terraform:
-    name: Terraform apply
+  cloudformation:
+    name: CloudFormation deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,19 +31,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.6"
-      - name: Terraform plan + apply
-        working-directory: terraform
-        env:
-          TF_VAR_github_org: ${{ github.repository_owner }}
-          TF_VAR_github_repo: ${{ github.event.repository.name }}
-          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+      - name: Deploy stack
         run: |
-          terraform init
-          terraform plan -out=tfplan
-          terraform apply -auto-approve tfplan
+          aws cloudformation deploy \
+            --template-file cloudformation/stack.yaml \
+            --stack-name mlops-toxic \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              GitHubOrg=${{ github.repository_owner }} \
+              GitHubRepo=${{ github.event.repository.name }} \
+              AlertEmail=${{ secrets.ALERT_EMAIL }} \
+            --no-fail-on-empty-changeset
 
   trigger-pipeline:
     name: Trigger SageMaker Pipeline

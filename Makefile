@@ -1,6 +1,6 @@
 .PHONY: up down restart logs clean ingest train init help \
         upload-data ecr-push sm-pipeline-run drift-check slo-check load-test \
-        tf-plan tf-apply tf-destroy test lint
+        cf-deploy cf-delete cf-outputs test lint
 
 up:
 	docker compose up -d --build
@@ -53,7 +53,7 @@ lint:
 
 # ── AWS bootstrap ──────────────────────────────────────────────────────────────
 upload-data:
-	python scripts/upload_data.py
+	python scripts/upload_data.py --local-path data/batches_cleaned/batch_000.csv
 
 ecr-push:
 	@if [ -z "$$ECR_IMAGE_URI" ]; then echo "ERROR: ECR_IMAGE_URI not set"; exit 1; fi
@@ -67,17 +67,33 @@ ecr-push:
 sm-pipeline-run:
 	python pipelines/run_pipeline.py --wait
 
-# ── Terraform ─────────────────────────────────────────────────────────────────
-tf-plan:
-	cd terraform && terraform init && terraform plan -out=tfplan
+# ── CloudFormation ─────────────────────────────────────────────────────────────
+cf-deploy:
+	@if [ -z "$${GITHUB_ORG}" ] || [ -z "$${GITHUB_REPO}" ] || [ -z "$${ALERT_EMAIL}" ]; then \
+		echo "ERROR: GITHUB_ORG, GITHUB_REPO, and ALERT_EMAIL must be set"; exit 1; \
+	fi
+	aws cloudformation deploy \
+		--template-file cloudformation/stack.yaml \
+		--stack-name mlops-toxic \
+		--capabilities CAPABILITY_NAMED_IAM \
+		--parameter-overrides \
+			GitHubOrg=$${GITHUB_ORG} \
+			GitHubRepo=$${GITHUB_REPO} \
+			AlertEmail=$${ALERT_EMAIL} \
+		--region $${AWS_REGION:-us-east-1}
 
-tf-apply:
-	cd terraform && terraform apply -auto-approve tfplan
-
-tf-destroy:
-	@echo "WARNING: This will destroy all AWS resources. Press Ctrl-C to abort."
+cf-delete:
+	@echo "WARNING: This will delete the CloudFormation stack. SageMaker endpoints are retained. Press Ctrl-C to abort."
 	@sleep 5
-	cd terraform && terraform destroy -auto-approve
+	aws cloudformation delete-stack --stack-name mlops-toxic \
+		--region $${AWS_REGION:-us-east-1}
+	aws cloudformation wait stack-delete-complete --stack-name mlops-toxic \
+		--region $${AWS_REGION:-us-east-1}
+
+cf-outputs:
+	aws cloudformation describe-stacks --stack-name mlops-toxic \
+		--query "Stacks[0].Outputs" --output table \
+		--region $${AWS_REGION:-us-east-1}
 
 # ── Monitoring ────────────────────────────────────────────────────────────────
 drift-check:
@@ -104,8 +120,9 @@ help:
 	@echo "AWS:"
 	@echo "  make upload-data Upload train.csv to S3 raw bucket"
 	@echo "  make ecr-push    Build + push Docker image to ECR"
-	@echo "  make tf-plan     Terraform plan (creates tfplan)"
-	@echo "  make tf-apply    Terraform apply"
+	@echo "  make cf-deploy   CloudFormation deploy (GITHUB_ORG/REPO/ALERT_EMAIL required)"
+	@echo "  make cf-outputs  Show stack outputs"
+	@echo "  make cf-delete   Delete CloudFormation stack (endpoints retained)"
 	@echo ""
 	@echo "SageMaker:"
 	@echo "  make sm-pipeline-run  Trigger + wait for pipeline execution"

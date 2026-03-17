@@ -24,6 +24,66 @@ from src.config import config
 from src.data.preprocessing import TextPreprocessor
 
 
+def run_preprocess(raw_s3_uri: str, pipeline_bucket: str, run_prefix: str) -> dict:
+    """Download raw CSV from S3, preprocess, split, upload splits. Returns S3 URIs dict."""
+    import tempfile
+    import boto3
+
+    s3 = boto3.client("s3")
+    parts = raw_s3_uri.replace("s3://", "").split("/", 1)
+    bucket, key = parts[0], parts[1]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        local_csv = tmp / "train.csv"
+        s3.download_file(bucket, key, str(local_csv))
+
+        df = pd.concat([pd.read_csv(local_csv)], ignore_index=True)
+        print(f"Loaded {len(df)} rows")
+
+        before = len(df)
+        df = df.dropna(subset=["comment_text"])
+        df["comment_text"] = df["comment_text"].astype(str)
+        if len(df) < before:
+            print(f"Dropped {before - len(df)} rows with NaN comment_text")
+
+        preprocessor = TextPreprocessor()
+        df = preprocessor.preprocess_dataframe(df)
+        print(f"After preprocessing: {len(df)} rows")
+
+        # Reference dataset (pre-split) for Evidently drift detection
+        ref_path = tmp / "reference.parquet"
+        df.to_parquet(ref_path, index=False)
+        ref_key = f"{run_prefix}/reference/reference.parquet"
+        s3.upload_file(str(ref_path), pipeline_bucket, ref_key)
+
+        from sklearn.model_selection import train_test_split
+        train_df, val_df = train_test_split(
+            df,
+            test_size=config.model.test_size,
+            random_state=config.model.random_state,
+        )
+        print(f"Train: {len(train_df)}, Validation: {len(val_df)}")
+
+        train_path = tmp / "train.csv"
+        val_path = tmp / "validation.csv"
+        train_df.to_csv(train_path, index=False)
+        val_df.to_csv(val_path, index=False)
+
+        train_key = f"{run_prefix}/train/train.csv"
+        val_key = f"{run_prefix}/validation/validation.csv"
+        s3.upload_file(str(train_path), pipeline_bucket, train_key)
+        s3.upload_file(str(val_path), pipeline_bucket, val_key)
+        print(f"Uploaded train → s3://{pipeline_bucket}/{train_key}")
+        print(f"Uploaded validation → s3://{pipeline_bucket}/{val_key}")
+
+    return {
+        "train_uri": f"s3://{pipeline_bucket}/{train_key}",
+        "val_uri": f"s3://{pipeline_bucket}/{val_key}",
+        "reference_uri": f"s3://{pipeline_bucket}/{ref_key}",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", type=str, default="/opt/ml/processing/input/raw")

@@ -20,6 +20,25 @@ REQUIRED_COLUMNS = {
 }
 
 
+def run_ingest(input_s3_uri: str) -> str:
+    """Download CSV from S3, validate schema, return the same URI (validation-only step)."""
+    import tempfile
+    import boto3
+
+    s3 = boto3.client("s3")
+    parts = input_s3_uri.replace("s3://", "").split("/", 1)
+    bucket, key = parts[0], parts[1]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = Path(tmpdir) / "train.csv"
+        s3.download_file(bucket, key, str(local_path))
+        df = pd.read_csv(local_path)
+        validate(df, input_s3_uri)
+        print(f"Schema validated for {input_s3_uri}")
+
+    return input_s3_uri
+
+
 def validate(df: pd.DataFrame, path: str) -> None:
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
