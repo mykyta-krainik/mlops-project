@@ -22,11 +22,6 @@ Parameters:
     Type: String
     Description: E-mail address for CloudWatch alarm notifications.
 
-  SageMakerInstanceType:
-    Type: String
-    Default: ml.m5.large
-    Description: Instance type for SageMaker endpoints.
-
   DriftThreshold:
     Type: String
     Default: "0.3"
@@ -245,7 +240,7 @@ Resources:
                   - sagemaker:CreateEndpointConfig
                   - sagemaker:DeleteEndpointConfig
                   - sagemaker:CreateModel
-                  - sagemaker:RegisterModel
+                  - sagemaker:CreateModelPackage
                   - sagemaker:DescribeModelPackageGroup
                   - sagemaker:CreateModelPackageGroup
                   - sagemaker:CreateModelPackage
@@ -506,7 +501,7 @@ Resources:
       Environment:
         Variables:
           ENDPOINT_NAME: !Sub "${Project}-prod"
-          FALLBACK_CONFIG_SSM: !Sub "/mlops-toxic/prod/fallback-config"
+          FALLBACK_CONFIG_SSM: "/mlops-toxic/prod/fallback-config"
       Code:
         ZipFile: |
           import os, boto3

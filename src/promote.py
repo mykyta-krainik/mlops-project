@@ -390,11 +390,6 @@ def main() -> None:
 
     print(f"Promoting: {best_model} (f1={best_f1:.4f}) over prod (f1={prod_f1:.4f})")
 
-    # The model artifact is mounted at /opt/ml/processing/input/model/
-    # Its S3 path is passed via environment variable set by the pipeline definition
-    model_s3_uri = (
-        input_dir / "model" / "model.tar.gz"
-    )
     model_s3_env = __import__("os").environ.get("BEST_MODEL_S3_URI", "")
 
     if not model_s3_env:

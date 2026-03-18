@@ -46,7 +46,6 @@ def get_prod_f1(model_package_group: str) -> float:
                 metrics = detail.get("ModelMetrics", {})
                 model_quality = metrics.get("ModelQuality", {})
                 statistics = model_quality.get("Statistics", {})
-                content_type = statistics.get("ContentType", "")
                 s3_uri = statistics.get("S3Uri", "")
                 if s3_uri:
                     return _read_f1_from_s3(s3_uri)

@@ -33,12 +33,9 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import config
-from src.data.preprocessing import TextPreprocessor
 from src.models.baseline import ToxicCommentClassifier
 
 

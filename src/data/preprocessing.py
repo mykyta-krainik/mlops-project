@@ -82,6 +82,7 @@ class TextPreprocessor:
         df = df.copy()
         output_col = output_column or text_column
         df[output_col] = df[text_column].apply(self.preprocess_text)
+        df = df[df[output_col].str.len() > 0].reset_index(drop=True)
         return df
 
 
