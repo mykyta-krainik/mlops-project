@@ -143,8 +143,8 @@ def main() -> None:
     current_df = download_capture_data(s3, config.aws.pipeline_bucket, config.sagemaker.prod_endpoint)
     print(f"Current window: {len(current_df)} rows")
 
-    if len(current_df) < 10:
-        print("Not enough captured data for drift analysis (< 10 rows). Skipping.")
+    if len(current_df) < 100:
+        print(f"Not enough captured data for drift analysis ({len(current_df)} rows, need >= 100). Skipping.")
         return
 
     print("Running Evidently drift report…")
