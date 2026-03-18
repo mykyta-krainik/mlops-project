@@ -206,7 +206,7 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
     else:
         variants = [
             {
-                "VariantName": "blue",
+                "VariantName": "green",
                 "ModelName": new_model_name,
                 "InstanceType": config.sagemaker.instance_type,
                 "InitialInstanceCount": 1,
@@ -303,7 +303,9 @@ def rollback_staging() -> None:
 
     blue_variant = next((v for v in variants if v["VariantName"] == "blue"), None)
     if blue_variant is None:
-        print("No blue variant found on staging — nothing to roll back to.")
+        # First run: only a green variant exists (the new model is the only model).
+        # Nothing stable to roll back to — leave the endpoint as-is.
+        print("No blue variant found on staging — endpoint is on its first deployment, skipping rollback.")
         return
 
     blue_model_name = blue_variant["ModelName"]

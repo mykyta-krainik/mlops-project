@@ -99,6 +99,7 @@ jobs:
         env:
           SAGEMAKER_ENDPOINT_NAME: toxic-comment-staging
           AWS_REGION: ${{ env.AWS_REGION }}
+          TARGET_VARIANT: green
         run: |
           locust --headless \
             --locustfile locustfile.py \

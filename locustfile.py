@@ -11,6 +11,7 @@ Run:
 Environment variables:
   SAGEMAKER_ENDPOINT_NAME  (default: toxic-comment-staging)
   AWS_REGION               (default: us-east-1)
+  TARGET_VARIANT           (optional, e.g. "green" — pins all requests to one variant)
 """
 
 import json
@@ -23,6 +24,7 @@ from locust import User, between, events, task
 
 ENDPOINT_NAME = os.environ.get("SAGEMAKER_ENDPOINT_NAME", "toxic-comment-staging")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+TARGET_VARIANT = os.environ.get("TARGET_VARIANT")
 
 SAMPLE_COMMENTS = [
     "This is a great article, thank you for sharing!",
@@ -56,12 +58,15 @@ class SageMakerUser(User):
         response_length = 0
 
         try:
-            response = self._runtime.invoke_endpoint(
+            kwargs = dict(
                 EndpointName=ENDPOINT_NAME,
                 ContentType="application/json",
                 Accept="application/json",
                 Body=body,
             )
+            if TARGET_VARIANT:
+                kwargs["TargetVariant"] = TARGET_VARIANT
+            response = self._runtime.invoke_endpoint(**kwargs)
             result = response["Body"].read()
             response_length = len(result)
         except Exception as e:

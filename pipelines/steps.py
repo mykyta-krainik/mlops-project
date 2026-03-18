@@ -1,15 +1,3 @@
-"""
-SageMaker v3 @step-decorated pipeline functions.
-
-Each function represents one pipeline step. They are created inside `build_steps()`
-so that infrastructure config (image_uri, role_arn, instance_type) can be bound
-at pipeline-definition time via the @step decorator parameters.
-
-Data flows between steps via function return values (serialized to S3 by SageMaker).
-Large data (CSVs, model artifacts) is passed as S3 URIs (strings); small data
-(metrics, evaluation results) is passed as Python dicts.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -28,11 +16,6 @@ def build_steps(
     instance_type: str,
     pipeline_bucket: str,
 ):
-    """Return the six @step-decorated pipeline functions bound to the given infra config.
-
-    Returns:
-        (ingest, preprocess, train_baseline, train_improved, evaluate, promote)
-    """
     _env = {
         "PYTHONPATH": "/app",
         "MLFLOW_TRACKING_URI": config.mlflow.tracking_uri,
@@ -52,7 +35,6 @@ def build_steps(
     }
 
     def sm_step(name: str, **extra_kwargs):
-        """Partial @step decorator with shared infra config."""
         return step(
             name=name,
             image_uri=image_uri,
@@ -62,7 +44,6 @@ def build_steps(
             **extra_kwargs,
         )
 
-    # ── Step 1: Ingest ────────────────────────────────────────────────────────
     @sm_step(name="IngestStep")
     def ingest(input_s3_uri: str) -> str:
         """Validate raw CSV schema. Returns the same S3 URI after validation."""

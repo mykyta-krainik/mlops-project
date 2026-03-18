@@ -1,29 +1,10 @@
-"""
-SageMaker v3 Pipeline definition for the toxic comment classifier.
-
-Pipeline steps:
-  1. ingest        — @step: validate raw CSV from S3
-  2. preprocess    — @step: TextPreprocessor + train/val split
-  3. train_baseline — @step: baseline model (TF-IDF + LogReg)          ┐ parallel
-  4. train_improved — @step: improved model (tuned hyperparams)         ┘
-  5. evaluate      — @step: compare both models vs current prod
-  6. condition     — ConditionStep: best_f1 >= prod_f1?
-       if True  → promote_step (@step: register + deploy to staging)
-       if False → FailStep("Challenger did not beat champion")
-
-Usage:
-  from pipelines.pipeline import get_pipeline
-  pipeline = get_pipeline(role_arn=..., image_uri=..., pipeline_bucket=...)
-  pipeline.upsert(role_arn=role_arn)
-  pipeline.start(parameters={"InputS3Uri": "s3://..."})
-"""
-
 import sys
 from pathlib import Path
 
+import boto3
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# ── SageMaker v3 imports ──────────────────────────────────────────────────────
 from sagemaker.core.workflow.conditions import ConditionGreaterThanOrEqualTo
 from sagemaker.core.workflow.execution_variables import ExecutionVariables
 from sagemaker.core.workflow.parameters import ParameterFloat, ParameterString
@@ -43,12 +24,10 @@ def get_pipeline(
     pipeline_bucket: str,
     region: str = None,
 ) -> Pipeline:
-    import boto3
     region = region or config.aws.region
     boto_session = boto3.Session(region_name=region)
     session = PipelineSession(boto_session=boto_session, default_bucket=pipeline_bucket)
 
-    # ── Pipeline parameters ────────────────────────────────────────────────────
     p_input_s3_uri = ParameterString(
         name="InputS3Uri",
         default_value=f"s3://{config.aws.raw_bucket}/train.csv",
@@ -66,7 +45,6 @@ def get_pipeline(
         default_value="mlops-toxic-models",
     )
 
-    # ── Build @step-decorated functions ───────────────────────────────────────
     ingest, preprocess, train_baseline, train_improved, evaluate, promote = build_steps(
         image_uri=image_uri,
         role_arn=role_arn,

@@ -9,6 +9,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
+from skl2onnx import to_onnx
+from skl2onnx.common.data_types import StringTensorType
 
 from src.config import config
 
@@ -154,9 +156,6 @@ class ToxicCommentClassifier:
     def save_onnx(self, path: Union[str, Path]) -> None:
         if self._pipeline is None:
             raise RuntimeError("No sklearn pipeline to export")
-
-        from skl2onnx import to_onnx
-        from skl2onnx.common.data_types import StringTensorType
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

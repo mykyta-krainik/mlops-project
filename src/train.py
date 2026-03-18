@@ -1,20 +1,3 @@
-"""
-SageMaker TrainingStep entry point.
-
-Used for both baseline and improved model variants — hyperparameters are passed
-as CLI arguments so the same script can be invoked with different settings.
-
-SageMaker mounts data at:
-  /opt/ml/input/data/train/train.csv
-  /opt/ml/input/data/validation/validation.csv
-
-SageMaker expects model artifacts at:
-  /opt/ml/model/            ← auto-uploaded to S3 after job completes
-
-SageMaker expects output (non-model) data at:
-  /opt/ml/output/data/      ← written here so evaluate.py can read metrics.json
-"""
-
 import argparse
 import contextlib
 import json
@@ -37,6 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import config
 from src.models.baseline import ToxicCommentClassifier
+
+import tempfile
+import boto3
+import tarfile
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray) -> dict:
@@ -78,10 +65,6 @@ def run_train(
     C: float,
     max_iter: int,
 ) -> dict:
-    """Download train/val data, train model, save ONNX to S3. Returns metrics + model URI."""
-    import tempfile
-    import boto3
-
     s3 = boto3.client("s3")
 
     def _download(uri: str, local: Path) -> None:
@@ -126,17 +109,19 @@ def run_train(
             y_pred = model.predict(X_val)
             y_proba = model.predict_proba(X_val)
             metrics = compute_metrics(y_val, y_pred, y_proba)
+
             if mlflow_ok:
                 mlflow.log_metrics(metrics)
 
             onnx_path = tmp / "model.onnx"
             print("Exporting to ONNX…")
             model.save_onnx(onnx_path)
+
             if mlflow_ok:
                 mlflow.log_artifact(str(onnx_path))
 
-            # Package as model.tar.gz — SageMaker endpoint ModelDataUrl must be a tarball
-            import tarfile
+            # SageMaker endpoint ModelDataUrl must be a tarball
+
             tarball_path = tmp / "model.tar.gz"
             with tarfile.open(tarball_path, "w:gz") as tar:
                 tar.add(onnx_path, arcname="model.onnx")
@@ -147,6 +132,7 @@ def run_train(
             print(f"Uploaded model → {model_s3_uri}")
 
             print("\nMetrics:")
+
             for name, value in sorted(metrics.items()):
                 print(f"  {name}: {value:.4f}")
 
@@ -154,9 +140,9 @@ def run_train(
 
 
 def setup_mlflow(run_name: str) -> bool:
-    """Configure MLflow. Returns True if setup succeeded, False if unavailable."""
     try:
         tracking_uri = config.mlflow.tracking_uri
+
         if tracking_uri == "databricks":
             os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
             os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
@@ -165,9 +151,12 @@ def setup_mlflow(run_name: str) -> bool:
             mlflow.set_tracking_uri(tracking_uri)
 
         experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
+
         if experiment is None:
             mlflow.create_experiment(config.mlflow.experiment_name)
+
         mlflow.set_experiment(config.mlflow.experiment_name)
+
         return True
     except Exception as e:
         print(f"MLflow setup failed (tracking disabled): {e}")
@@ -183,7 +172,6 @@ def main() -> None:
     parser.add_argument("--C", type=float, default=config.model.lr_C)
     parser.add_argument("--max-iter", type=int, default=config.model.lr_max_iter)
 
-    # SageMaker injects these as environment variables too, but we also accept CLI
     parser.add_argument("--train", type=str, default="/opt/ml/input/data/train")
     parser.add_argument("--validation", type=str, default="/opt/ml/input/data/validation")
     parser.add_argument("--model-dir", type=str, default="/opt/ml/model")
@@ -194,7 +182,6 @@ def main() -> None:
     run_name = f"{args.model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     setup_mlflow(run_name)
 
-    # ── Load data ────────────────────────────────────────────────────────────────
     train_path = Path(args.train)
     val_path = Path(args.validation)
 
@@ -211,7 +198,6 @@ def main() -> None:
     X_val = val_df["comment_text"].tolist()
     y_val = val_df[list(config.model.target_columns)].values
 
-    # ── Train ────────────────────────────────────────────────────────────────────
     model = ToxicCommentClassifier(
         max_features=args.max_features,
         ngram_range=(args.ngram_min, args.ngram_max),
@@ -241,7 +227,6 @@ def main() -> None:
         for name, value in sorted(metrics.items()):
             print(f"  {name}: {value:.4f}")
 
-        # ── Save ONNX artifact (only format used in serving) ──────────────────────
         model_dir = Path(args.model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,7 +236,6 @@ def main() -> None:
         mlflow.log_artifact(str(onnx_path))
         print(f"Saved ONNX model to {onnx_path}")
 
-        # ── Write metrics.json for evaluate.py ───────────────────────────────────
         output_dir = Path(args.output_data_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -9,7 +9,6 @@ from typing import Dict, Optional, Tuple
 import mlflow
 import numpy as np
 import pandas as pd
-import wandb
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -112,18 +111,6 @@ def setup_mlflow() -> None:
     mlflow.set_experiment(config.mlflow.experiment_name)
 
 
-def setup_wandb(run_name: str) -> wandb.sdk.wandb_run.Run:
-    return wandb.init(
-        project=config.wandb.project,
-        entity=config.wandb.entity if config.wandb.entity else None,
-        name=run_name,
-        config={
-            "model_type": "TF-IDF + LogReg",
-            "framework": "sklearn",
-        },
-    )
-
-
 def train(
     data_source: str,
     use_minio: bool = False,
@@ -133,7 +120,6 @@ def train(
     run_name = run_name or f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     setup_mlflow()
-    wandb_run = setup_wandb(run_name)
 
     storage = MinioStorage() if (use_minio or save_to_minio) else None
 
@@ -167,8 +153,6 @@ def train(
     params["test_size"] = config.model.test_size
     params["random_state"] = config.model.random_state
 
-    wandb.config.update(params)
-
     with mlflow.start_run(run_name=run_name):
         mlflow.log_params(params)
 
@@ -180,7 +164,6 @@ def train(
         metrics = compute_metrics(y_val, y_pred, y_proba)
 
         mlflow.log_metrics(metrics)
-        wandb.log(metrics)
 
         print("\nMetrics:")
         for name, value in sorted(metrics.items()):
@@ -197,15 +180,6 @@ def train(
             print("Exporting to ONNX format...")
             model.save_onnx(onnx_path)
             mlflow.log_artifact(str(onnx_path))
-
-            artifact = wandb.Artifact(
-                name=f"model-{run_name}",
-                type="model",
-                description="TF-IDF + LogReg toxic comment classifier",
-            )
-            artifact.add_file(str(sklearn_path))
-            artifact.add_file(str(onnx_path))
-            wandb_run.log_artifact(artifact)
 
             if save_to_minio and storage:
                 storage.upload_file(
@@ -229,8 +203,6 @@ def train(
                     "latest/model.pkl",
                     sklearn_path,
                 )
-
-    wandb_run.finish()
 
     return model, metrics
 
