@@ -129,35 +129,42 @@ def publish_cloudwatch_metric(drift_score: float) -> None:
 
 def main() -> None:
     s3 = boto3.client("s3", region_name=config.aws.region)
+    drift_score = 0.0
+    drift_detected = False
 
-    print("Downloading reference dataset…")
     try:
-        reference_df = download_reference(s3, config.aws.processed_bucket)
-        print(f"Reference: {len(reference_df)} rows")
-    except Exception as e:
-        print(f"Could not download reference dataset: {e}")
-        print("Skipping drift check (reference not available — run pipeline first).")
-        return
+        print("Downloading reference dataset…")
+        try:
+            reference_df = download_reference(s3, config.aws.processed_bucket)
+            print(f"Reference: {len(reference_df)} rows")
+        except Exception as e:
+            print(f"Could not download reference dataset: {e}")
+            print("Skipping drift check (reference not available — run pipeline first).")
+            return
 
-    print("Downloading recent captured data…")
-    current_df = download_capture_data(s3, config.aws.pipeline_bucket, config.sagemaker.prod_endpoint)
-    print(f"Current window: {len(current_df)} rows")
+        print("Downloading recent captured data…")
+        current_df = download_capture_data(s3, config.aws.pipeline_bucket, config.sagemaker.prod_endpoint)
+        print(f"Current window: {len(current_df)} rows")
 
-    if len(current_df) < 300:
-        print(f"Not enough captured data for drift analysis ({len(current_df)} rows, need >= 300). Skipping.")
-        publish_cloudwatch_metric(0.0)
-        return
+        if len(current_df) < 300:
+            print(f"Not enough captured data for drift analysis ({len(current_df)} rows, need >= 300). Skipping.")
+            return
 
-    print("Running Evidently drift report…")
-    json_summary, html_path = run_drift_report(reference_df, current_df)
-    drift_score = json_summary["drift_score"]
+        print("Running Evidently drift report…")
+        json_summary, html_path = run_drift_report(reference_df, current_df)
+        drift_score = json_summary["drift_score"]
 
-    print(f"Drift score: {drift_score:.4f} (threshold: {DRIFT_THRESHOLD})")
+        print(f"Drift score: {drift_score:.4f} (threshold: {DRIFT_THRESHOLD})")
 
-    upload_reports(s3, config.aws.pipeline_bucket, json_summary, html_path)
-    publish_cloudwatch_metric(drift_score)
+        upload_reports(s3, config.aws.pipeline_bucket, json_summary, html_path)
 
-    if drift_score > DRIFT_THRESHOLD:
+        if drift_score > DRIFT_THRESHOLD:
+            drift_detected = True
+
+    finally:
+        publish_cloudwatch_metric(drift_score)
+
+    if drift_detected:
         print(f"DRIFT DETECTED: {drift_score:.4f} > {DRIFT_THRESHOLD}")
         sys.exit(1)
 
