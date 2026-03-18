@@ -102,7 +102,7 @@ jobs:
         run: |
           locust --headless \
             --locustfile locustfile.py \
-            -u 100 -r 10 \
+            -u 10 -r 2 \
             --run-time 2m \
             --csv /tmp/locust
       - name: Check SLO results

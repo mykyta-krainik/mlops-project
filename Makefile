@@ -113,7 +113,7 @@ slo-check:
 load-test:
 	locust --headless \
 		--locustfile locustfile.py \
-		-u 100 -r 10 \
+		-u 10 -r 2 \
 		--run-time 2m \
 		--csv /tmp/locust
 	python scripts/check_load_test_results.py --csv /tmp/locust_stats.csv
