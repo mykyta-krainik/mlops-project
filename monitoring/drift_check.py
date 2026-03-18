@@ -64,13 +64,13 @@ def download_capture_data(s3_client, pipeline_bucket: str, endpoint_name: str) -
 
 def run_drift_report(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> tuple[dict, str]:
     from evidently import ColumnMapping
-    from evidently.metric_preset import DataDriftPreset, TextOverviewPreset
+    from evidently.metric_preset import DataDriftPreset
     from evidently.report import Report
 
     text_cols = ["comment_text"]
     column_mapping = ColumnMapping(text_features=text_cols)
 
-    report = Report(metrics=[DataDriftPreset(), TextOverviewPreset()])
+    report = Report(metrics=[DataDriftPreset()])
     report.run(
         reference_data=reference_df[text_cols] if text_cols[0] in reference_df.columns else reference_df,
         current_data=current_df[text_cols] if text_cols[0] in current_df.columns else current_df,
