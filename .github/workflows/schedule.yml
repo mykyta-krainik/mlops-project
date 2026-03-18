@@ -69,7 +69,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install boto3 evidently pandas pyarrow python-dotenv
+      - run: pip install boto3 "evidently==0.4.40" pandas pyarrow python-dotenv
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

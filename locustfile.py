@@ -1,19 +1,3 @@
-"""
-Locust load test for the SageMaker staging endpoint.
-
-Uses boto3 sagemaker-runtime (not HTTP directly) since SageMaker endpoints
-are not exposed as public HTTP — all access goes through AWS SDK.
-
-Run:
-  locust --headless -u 100 -r 10 --run-time 2m --csv /tmp/locust \
-    --locustfile locustfile.py
-
-Environment variables:
-  SAGEMAKER_ENDPOINT_NAME  (default: toxic-comment-staging)
-  AWS_REGION               (default: us-east-1)
-  TARGET_VARIANT           (optional, e.g. "green" — pins all requests to one variant)
-"""
-
 import json
 import os
 import random
@@ -41,11 +25,6 @@ SAMPLE_COMMENTS = [
 
 
 class SageMakerUser(User):
-    """
-    Locust User that calls SageMaker endpoint via boto3.
-    Response time is measured manually using time.perf_counter().
-    """
-
     wait_time = between(0.1, 0.5)
 
     def on_start(self) -> None:
