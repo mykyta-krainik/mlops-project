@@ -106,7 +106,7 @@ jobs:
         run: |
           TITLE="[Alert] Drift/SLO check failed $(date +%Y-%m-%d)"
           BODY="Drift or SLO check failed in scheduled run ${{ github.run_id }}.\n\nSee artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh issue create --title "$TITLE" --body "$BODY" --label "monitoring"
+          gh issue create --title "$TITLE" --body "$BODY"
 
       - name: Fail workflow if checks failed
         if: steps.drift.outcome == 'failure' || steps.slo.outcome == 'failure'

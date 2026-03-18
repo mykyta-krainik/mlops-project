@@ -1,16 +1,10 @@
 """
-CLI to upsert and optionally start the SageMaker Pipeline.
-
-Usage:
   python pipelines/run_pipeline.py \
     --role-arn arn:aws:iam::123:role/mlops-toxic-sagemaker-exec \
     --image-uri 123.dkr.ecr.us-east-1.amazonaws.com/mlops-toxic:latest \
     [--input-s3-uri s3://mlops-toxic-raw/train.csv] \
     [--f1-threshold 0.02] \
     [--wait]
-
-The --wait flag blocks until execution completes and exits with code 1 on failure.
-This is how GitHub Actions triggers and waits for the pipeline.
 """
 
 import argparse
@@ -51,7 +45,6 @@ def main() -> None:
         print("ERROR: --image-uri is required (or set ECR_IMAGE_URI env var)")
         sys.exit(1)
 
-    # ── Upsert pipeline definition ────────────────────────────────────────────
     print(f"Upserting pipeline '{config.sagemaker.pipeline_name}'…")
     pipeline = get_pipeline(
         role_arn=args.role_arn,
@@ -66,7 +59,6 @@ def main() -> None:
         print("--no-start flag set, skipping execution.")
         return
 
-    # ── Start execution ───────────────────────────────────────────────────────
     import datetime
 
     run_name = args.run_name or f"run-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -88,9 +80,6 @@ def main() -> None:
         print("Not waiting for completion (use --wait to block).")
         return
 
-    # ── Poll until terminal state ─────────────────────────────────────────────
-    # Use execution.describe() (same session as pipeline.start()) to avoid any
-    # region/credentials mismatch that would occur with a separate boto3 client.
     import botocore.exceptions
 
     print(f"Polling every {POLL_INTERVAL}s…")
@@ -120,18 +109,18 @@ def main() -> None:
         failure_reason = resp.get("FailureReason", "unknown") if resp else "unknown"
         print(f"\nPipeline execution {status}: {failure_reason}")
 
-        # Print per-step failure details so the root cause is visible in CI logs
         try:
             steps_resp = execution.list_steps()
-            # v3 SDK returns a list directly; v2 returned a dict with "PipelineExecutionSteps"
             steps = steps_resp if isinstance(steps_resp, list) else steps_resp.get("PipelineExecutionSteps", [])
             failed = [s for s in steps if s.get("StepStatus") == "Failed"]
+
             for s in failed:
                 print(f"\n  Failed step: {s.get('StepName')}")
                 print(f"    Failure reason: {s.get('FailureReason', 'n/a')}")
                 metadata = s.get("Metadata", {})
                 for key, val in metadata.items():
                     print(f"    {key}: {val}")
+
         except Exception as list_exc:
             print(f"  (Could not retrieve step details: {list_exc})")
 

@@ -52,8 +52,6 @@ def get_pipeline(
         pipeline_bucket=pipeline_bucket,
     )
 
-    # ── Compose pipeline DAG ──────────────────────────────────────────────────
-    # Each call returns a DelayedReturn; SageMaker resolves the DAG from dependencies.
     run_prefix = ExecutionVariables.PIPELINE_EXECUTION_ID
 
     raw_uri = ingest(p_input_s3_uri)
@@ -64,7 +62,6 @@ def get_pipeline(
 
     eval_result = evaluate(baseline_result, improved_result, p_model_package_group)
 
-    # ── Condition: best_f1 >= prod_f1 (threshold baked into evaluate step) ───
     condition = ConditionGreaterThanOrEqualTo(
         left=eval_result["best_f1_macro"],
         right=eval_result["prod_f1_macro"],
@@ -83,12 +80,6 @@ def get_pipeline(
         else_steps=[fail_step],
     )
 
-    # ── Assemble pipeline ──────────────────────────────────────────────────────
-    # All @step DelayedReturn objects must be listed explicitly — the StepsCompiler
-    # does NOT auto-discover upstream @step steps from condition expressions because
-    # StepOutput._referenced_steps is not yet implemented in v3.5.0.
-    # Note: promote_delayed is omitted here because it is already registered in
-    # condition_step.if_steps and adding it again would raise a duplicate-name error.
     pipeline = Pipeline(
         name=config.sagemaker.pipeline_name,
         parameters=[p_input_s3_uri, p_f1_threshold, p_run_name, p_model_package_group],

@@ -1,18 +1,3 @@
-"""
-SLO check — queries CloudWatch Metrics for the production endpoint.
-
-SLOs:
-  P95 ModelLatency  < 500ms (CloudWatch reports in microseconds)
-  Error rate        < 1%    (4XX + 5XX / Invocations)
-
-Exit code:
-  0 — all SLOs met
-  1 — one or more SLOs breached
-
-Usage:
-  python monitoring/slo_check.py [--lookback-hours 24] [--endpoint mlops-toxic-prod]
-"""
-
 import argparse
 import json
 import sys
@@ -25,8 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import config
 
-# SLO thresholds
-LATENCY_SLO_US = 500_000   # 500ms in microseconds (CloudWatch unit for ModelLatency)
+LATENCY_SLO_US = 500_000   # 500ms
 ERROR_RATE_SLO = 1.0        # percent
 
 
@@ -40,16 +24,19 @@ def get_metric_statistic(
     start_time: datetime,
     end_time: datetime,
 ) -> float | None:
-    response = cw.get_metric_statistics(
+    kwargs = dict(
         Namespace=namespace,
         MetricName=metric_name,
         Dimensions=dimensions,
         StartTime=start_time,
         EndTime=end_time,
         Period=period,
-        Statistics=[stat] if stat not in ("p95", "p99") else [],
-        ExtendedStatistics=[stat] if stat in ("p95", "p99") else [],
     )
+    if stat in ("p95", "p99"):
+        kwargs["ExtendedStatistics"] = [stat]
+    else:
+        kwargs["Statistics"] = [stat]
+    response = cw.get_metric_statistics(**kwargs)
     datapoints = response.get("Datapoints", [])
     if not datapoints:
         return None

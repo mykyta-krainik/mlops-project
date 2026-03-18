@@ -1,22 +1,3 @@
-"""
-Evidently batch drift detection job.
-
-Compares the reference dataset (saved at training time by preprocess.py)
-against recently captured inference data (from SageMaker Data Capture).
-
-Outputs:
-  - HTML drift report uploaded to s3://<pipeline_bucket>/drift-reports/YYYY-MM-DD/
-  - JSON summary uploaded to the same prefix
-  - Custom CloudWatch metric: DriftScore (mlops-toxic/monitoring namespace)
-
-Exit code:
-  0 — drift below threshold
-  1 — drift detected (share_of_drifted_columns > DRIFT_THRESHOLD)
-
-Environment variables (set in GitHub Actions / local .env):
-  AWS_REGION, AWS_PIPELINE_BUCKET, AWS_PROCESSED_BUCKET
-"""
-
 import json
 import os
 import sys
@@ -42,18 +23,6 @@ def download_reference(s3_client, bucket: str, prefix: str = "reference/referenc
 
 
 def download_capture_data(s3_client, pipeline_bucket: str, endpoint_name: str) -> pd.DataFrame:
-    """
-    SageMaker Data Capture stores JSONL files under:
-      s3://<bucket>/data-capture/<endpoint>/<variant>/<YYYY/MM/DD>/<filename>.jsonl
-
-    Each line is a JSON object with:
-      {
-        "captureData": {
-          "endpointInput": {"data": "<base64 or raw JSON>"},
-          "endpointOutput": {"data": "<base64 or raw JSON>"}
-        }
-      }
-    """
     import base64
     import json as jsonlib
 
@@ -136,7 +105,6 @@ def upload_reports(s3_client, pipeline_bucket: str, json_summary: dict, html_pat
     print(f"Drift report: s3://{pipeline_bucket}/{html_key}")
     print(f"Drift summary: s3://{pipeline_bucket}/{json_key}")
 
-    # Also copy HTML to /tmp for GitHub Actions artifact upload
     import shutil
     shutil.copy2(html_path, f"/tmp/drift_report_{date_str}.html")
 

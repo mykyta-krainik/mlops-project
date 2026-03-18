@@ -1,10 +1,3 @@
-"""
-SageMaker ProcessingStep — ingest.
-
-The raw CSV is mounted by SageMaker from S3 at --input-dir.
-This step validates the schema and passes the file through to --output-dir.
-"""
-
 import argparse
 import shutil
 import sys
@@ -21,7 +14,6 @@ REQUIRED_COLUMNS = {
 
 
 def run_ingest(input_s3_uri: str) -> str:
-    """Download CSV from S3, validate schema, return the same URI (validation-only step)."""
     import tempfile
     import boto3
 
@@ -58,7 +50,6 @@ def main() -> None:
 
     csv_files = list(input_dir.glob("*.csv"))
     if not csv_files:
-        # SageMaker may mount a single file rather than a directory
         csv_files = list(input_dir.parent.glob("*.csv"))
 
     if not csv_files:

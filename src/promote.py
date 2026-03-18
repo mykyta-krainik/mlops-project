@@ -1,24 +1,3 @@
-"""
-SageMaker ProcessingStep entry point — champion/challenger gate and deployment.
-
-Runs only when the ConditionStep decides the new model beats prod by the threshold.
-
-Responsibilities:
-  1. Register best model to MLflow (Databricks) registry at stage "Staging"
-  2. Register to SageMaker Model Registry
-  3. Deploy to STAGING endpoint with canary split (80% blue / 20% green)
-
-When called with --to-prod flag (from deploy.yml after load test passes):
-  - Promotes green variant to 100% on the PRODUCTION endpoint
-
-When called with --simulate-failure (dev only):
-  - Updates staging to a bad config to test SageMaker auto-rollback
-
-Input layout:
-  /opt/ml/processing/input/evaluation/evaluation.json
-  /opt/ml/processing/input/model/model.onnx   (the best model artifact)
-"""
-
 import argparse
 import json
 import sys
@@ -28,7 +7,6 @@ from pathlib import Path
 
 import boto3
 import mlflow
-import mlflow.pyfunc
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -36,14 +14,12 @@ from src.config import config
 
 
 def setup_mlflow() -> bool:
-    """Configure MLflow. Returns True if setup succeeded."""
     try:
         if config.mlflow.tracking_uri == "databricks":
             import os
             os.environ["DATABRICKS_HOST"] = config.mlflow.databricks_host
             os.environ["DATABRICKS_TOKEN"] = config.mlflow.databricks_token
             mlflow.set_tracking_uri("databricks")
-            # Force legacy Workspace Model Registry (not Unity Catalog)
             mlflow.set_registry_uri("databricks")
         else:
             mlflow.set_tracking_uri(config.mlflow.tracking_uri)
@@ -54,7 +30,6 @@ def setup_mlflow() -> bool:
 
 
 def register_to_mlflow(model_s3_uri: str, metrics: dict, run_name: str) -> str:
-    """Log model artifact from S3 to MLflow and register to Staging."""
     if not setup_mlflow():
         return ""
 
@@ -85,12 +60,10 @@ def register_to_sagemaker(
     model_package_group: str,
     is_first_run: bool,
 ) -> str:
-    """Create a SageMaker Model Package and return its ARN."""
     sm = boto3.client("sagemaker", region_name=config.aws.region)
 
     approval_status = "Approved" if is_first_run else "PendingManualApproval"
 
-    # Upload metrics to S3 so evaluate.py can fetch them for future runs
     s3 = boto3.client("s3")
     metrics_key = f"model-registry/{datetime.now().strftime('%Y%m%d_%H%M%S')}/metrics.json"
     s3.put_object(
@@ -131,17 +104,10 @@ def register_to_sagemaker(
 
 
 def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: str) -> None:
-    """
-    Update staging endpoint with a canary split:
-      blue (existing model): 80% traffic
-      green (new model):     20% traffic
-    SageMaker manages the rollout internally — no downtime.
-    """
     sm = boto3.client("sagemaker", region_name=config.aws.region)
     endpoint_name = config.sagemaker.staging_endpoint
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # Describe existing endpoint to get current model for blue variant
     import botocore.exceptions
     endpoint_exists = False
     endpoint_failed = False
@@ -160,7 +126,6 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
         if e.response["Error"]["Code"] not in ("ValidationException", "ResourceNotFoundException"):
             raise
 
-    # Delete failed endpoint so we can create fresh
     if endpoint_failed:
         sm.delete_endpoint(EndpointName=endpoint_name)
         print(f"Deleted failed endpoint '{endpoint_name}', waiting for deletion...")
@@ -175,7 +140,6 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
                 raise
         endpoint_exists = False
 
-    # Create new model resource
     new_model_name = f"{config.project if hasattr(config, 'project') else 'mlops-toxic'}-{run_name}"
     sm.create_model(
         ModelName=new_model_name,
@@ -231,16 +195,11 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
 
 
 def promote_to_prod(run_name: str) -> None:
-    """
-    Shift green variant to 100% on the PRODUCTION endpoint.
-    Called from deploy.yml after the Locust load test passes on staging.
-    """
     sm = boto3.client("sagemaker", region_name=config.aws.region)
     staging_endpoint = config.sagemaker.staging_endpoint
     prod_endpoint = config.sagemaker.prod_endpoint
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # Get the green (new) model from staging
     staging_config_name = sm.describe_endpoint(EndpointName=staging_endpoint)["EndpointConfigName"]
     staging_config = sm.describe_endpoint_config(EndpointConfigName=staging_config_name)
     variants = staging_config["ProductionVariants"]
@@ -248,7 +207,6 @@ def promote_to_prod(run_name: str) -> None:
     green_variant = next((v for v in variants if v["VariantName"] == "green"), variants[0])
     new_model_name = green_variant["ModelName"]
 
-    # Create a prod config with 100% traffic on the new model
     prod_config_name = f"mlops-toxic-prod-{ts}"
     sm.create_endpoint_config(
         EndpointConfigName=prod_config_name,
@@ -303,8 +261,6 @@ def rollback_staging() -> None:
 
     blue_variant = next((v for v in variants if v["VariantName"] == "blue"), None)
     if blue_variant is None:
-        # First run: only a green variant exists (the new model is the only model).
-        # Nothing stable to roll back to — leave the endpoint as-is.
         print("No blue variant found on staging — endpoint is on its first deployment, skipping rollback.")
         return
 
@@ -332,16 +288,13 @@ def rollback_staging() -> None:
 
 
 def simulate_failure() -> None:
-    """Dev-only: update staging to a bad config to test SageMaker auto-rollback."""
     sm = boto3.client("sagemaker", region_name=config.aws.region)
     endpoint_name = config.sagemaker.staging_endpoint
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # Current config (our "rollback target")
     current_config_name = sm.describe_endpoint(EndpointName=endpoint_name)["EndpointConfigName"]
     print(f"Current config: {current_config_name}")
 
-    # Create a broken config (references a non-existent model)
     bad_config_name = f"mlops-toxic-bad-{ts}"
     sm.create_endpoint_config(
         EndpointConfigName=bad_config_name,
@@ -421,7 +374,6 @@ def main() -> None:
         promote_to_prod(run_name=ts)
         return
 
-    # ── Normal promotion flow ─────────────────────────────────────────────────
     input_dir = Path(args.input_dir)
     eval_path = input_dir / "evaluation" / "evaluation.json"
     with open(eval_path) as f:

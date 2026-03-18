@@ -31,7 +31,6 @@ def _load_model():
     return _model
 
 
-# Pre-load at startup so /ping reflects readiness
 try:
     _load_model()
     _ready = True
@@ -63,5 +62,4 @@ def invocations():
 
 
 if __name__ == "__main__":
-    # Run via gunicorn in production; direct flask run only for local testing
     app.run(host="0.0.0.0", port=8080)

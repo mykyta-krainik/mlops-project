@@ -46,26 +46,21 @@ def build_steps(
 
     @sm_step(name="IngestStep")
     def ingest(input_s3_uri: str) -> str:
-        """Validate raw CSV schema. Returns the same S3 URI after validation."""
         import sys
         sys.path.insert(0, "/app")
         from src.ingest import run_ingest
         return run_ingest(input_s3_uri)
 
-    # ── Step 2: Preprocess ────────────────────────────────────────────────────
     @sm_step(name="PreprocessStep")
     def preprocess(raw_s3_uri: str, run_prefix: str) -> dict:
-        """Preprocess CSV, split train/val, upload to S3. Returns URIs dict."""
         import os
         import sys
         sys.path.insert(0, "/app")
         from src.preprocess import run_preprocess
         return run_preprocess(raw_s3_uri, os.environ["AWS_PIPELINE_BUCKET"], run_prefix)
 
-    # ── Steps 3 & 4: Train (baseline and improved run in parallel) ────────────
     @sm_step(name="TrainBaselineStep")
     def train_baseline(train_uri: str, val_uri: str, run_prefix: str) -> dict:
-        """Train baseline model (TF-IDF + LogReg). Returns metrics + model S3 URI."""
         import os
         import sys
         sys.path.insert(0, "/app")
@@ -84,7 +79,6 @@ def build_steps(
 
     @sm_step(name="TrainImprovedStep")
     def train_improved(train_uri: str, val_uri: str, run_prefix: str) -> dict:
-        """Train improved model (tuned hyperparams). Returns metrics + model S3 URI."""
         import os
         import sys
         sys.path.insert(0, "/app")
@@ -101,19 +95,15 @@ def build_steps(
             max_iter=2000,
         )
 
-    # ── Step 5: Evaluate ──────────────────────────────────────────────────────
     @sm_step(name="EvaluateStep")
     def evaluate(baseline: dict, improved: dict, model_package_group: str) -> dict:
-        """Compare candidates vs each other and production. Returns evaluation dict."""
         import sys
         sys.path.insert(0, "/app")
         from src.evaluate import run_evaluate
         return run_evaluate(baseline, improved, model_package_group)
 
-    # ── Step 6a: Promote (runs only when condition passes) ────────────────────
     @sm_step(name="PromoteStep")
     def promote(eval_result: dict, ecr_image_uri: str, model_package_group: str) -> None:
-        """Register best model to MLflow + SageMaker registry; deploy canary to staging."""
         import sys
         sys.path.insert(0, "/app")
         from datetime import datetime
@@ -122,6 +112,7 @@ def build_steps(
             register_to_sagemaker,
             deploy_canary_to_staging,
         )
+
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
         is_first_run = eval_result["prod_f1_macro"] == 0.0
 

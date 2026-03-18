@@ -1,22 +1,3 @@
-"""
-SageMaker real-time endpoint serving contract.
-
-SageMaker calls these four functions in order for every request:
-  model_fn    → load model once at startup
-  input_fn    → parse raw request body
-  predict_fn  → run inference
-  output_fn   → serialize prediction to response
-
-The Flask API (docker-compose) is kept unchanged for local demo.
-This file is used only when deploying to SageMaker endpoints.
-
-Request format (same as Flask API):
-  Single:  {"comment": "some text"}
-  Batch:   {"comments": ["text1", "text2"]}
-
-Response format matches src/api/schemas.py PredictionResult.
-"""
-
 import json
 import os
 import sys
@@ -38,7 +19,6 @@ _ENDPOINT_NAME = os.environ.get("ENDPOINT_NAME", "unknown")
 
 
 def model_fn(model_dir: str) -> dict:
-    """Load ONNX model and preprocessor. Called once at container startup."""
     model_path = Path(model_dir) / "model.onnx"
     if not model_path.exists():
         raise FileNotFoundError(f"model.onnx not found in {model_dir}")
@@ -58,7 +38,6 @@ def model_fn(model_dir: str) -> dict:
 
 
 def input_fn(request_body: str, content_type: str = "application/json") -> list[str]:
-    """Parse request body into a list of raw comment strings."""
     if content_type != "application/json":
         raise ValueError(f"Unsupported content type: {content_type}")
 
@@ -78,16 +57,13 @@ def input_fn(request_body: str, content_type: str = "application/json") -> list[
 
 
 def predict_fn(comments: list[str], model_dict: dict) -> list[dict]:
-    """Run inference and return structured prediction dicts."""
     classifier: ToxicCommentClassifier = model_dict["classifier"]
     preprocessor: TextPreprocessor = model_dict["preprocessor"]
     moderation: ModerationEngine = model_dict["moderation"]
 
-    # Preprocess
     cleaned = [preprocessor.preprocess_text(c) for c in comments]
 
-    # Inference
-    probas = classifier.predict_proba(cleaned)  # shape (N, 6)
+    probas = classifier.predict_proba(cleaned)  # (N, 6)
 
     results = []
     for i, comment in enumerate(comments):
@@ -108,7 +84,6 @@ def predict_fn(comments: list[str], model_dict: dict) -> list[dict]:
             }
         )
 
-    # Emit custom CloudWatch metrics (non-blocking best-effort)
     try:
         toxic_rate = sum(1 for r in results if r["is_toxic"]) / len(results)
         mean_max_prob = float(np.mean([max(r["predictions"].values()) for r in results]))
@@ -136,13 +111,12 @@ def predict_fn(comments: list[str], model_dict: dict) -> list[dict]:
             ],
         )
     except Exception:
-        pass  # Never fail inference due to metrics errors
+        pass
 
     return results
 
 
 def output_fn(predictions: list[dict], accept: str = "application/json") -> tuple[str, str]:
-    """Serialize predictions to JSON response."""
     if accept not in ("application/json", "*/*"):
         raise ValueError(f"Unsupported accept type: {accept}")
 

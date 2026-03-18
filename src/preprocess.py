@@ -1,16 +1,3 @@
-"""
-SageMaker ProcessingStep — feature preprocessing.
-
-Applies TextPreprocessor, splits into train/validation, and saves a reference
-dataset (pre-split) for Evidently drift detection.
-
-Input:  /opt/ml/processing/input/raw/*.csv
-Output:
-  /opt/ml/processing/output/train/train.csv
-  /opt/ml/processing/output/validation/validation.csv
-  /opt/ml/processing/output/reference/reference.parquet   ← Evidently baseline
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -25,7 +12,6 @@ from src.data.preprocessing import TextPreprocessor
 
 
 def run_preprocess(raw_s3_uri: str, pipeline_bucket: str, run_prefix: str) -> dict:
-    """Download raw CSV from S3, preprocess, split, upload splits. Returns S3 URIs dict."""
     import tempfile
     import boto3
 
@@ -51,11 +37,11 @@ def run_preprocess(raw_s3_uri: str, pipeline_bucket: str, run_prefix: str) -> di
         df = preprocessor.preprocess_dataframe(df)
         print(f"After preprocessing: {len(df)} rows")
 
-        # Reference dataset (pre-split) for Evidently drift detection
         ref_path = tmp / "reference.parquet"
         df.to_parquet(ref_path, index=False)
         ref_key = f"{run_prefix}/reference/reference.parquet"
         s3.upload_file(str(ref_path), pipeline_bucket, ref_key)
+        s3.upload_file(str(ref_path), config.aws.processed_bucket, "reference/reference.parquet")
 
         from sklearn.model_selection import train_test_split
         train_df, val_df = train_test_split(
@@ -104,18 +90,15 @@ def main() -> None:
     df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
     print(f"Loaded {len(df)} rows from {len(csv_files)} file(s)")
 
-    # ── Preprocess ────────────────────────────────────────────────────────────
     preprocessor = TextPreprocessor()
     df = preprocessor.preprocess_dataframe(df)
     print(f"After preprocessing: {len(df)} rows")
 
-    # ── Save reference dataset for Evidently (pre-split) ─────────────────────
     ref_dir = output_dir / "reference"
     ref_dir.mkdir(parents=True, exist_ok=True)
     df.to_parquet(ref_dir / "reference.parquet", index=False)
     print(f"Saved reference dataset: {ref_dir / 'reference.parquet'}")
 
-    # ── Train/validation split ────────────────────────────────────────────────
     train_df, val_df = train_test_split(
         df,
         test_size=args.test_size,

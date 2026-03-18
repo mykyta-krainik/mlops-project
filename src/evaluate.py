@@ -1,20 +1,3 @@
-"""
-SageMaker ProcessingStep entry point — model evaluation.
-
-Reads metrics.json from baseline and improved training jobs, compares them
-against each other and against the currently approved production model.
-
-Writes evaluation.json as a PropertyFile so the pipeline's ConditionStep
-can read it with JsonGet without leaving SageMaker.
-
-Input layout (mounted by SageMaker):
-  /opt/ml/processing/input/baseline/metrics.json
-  /opt/ml/processing/input/improved/metrics.json
-
-Output layout:
-  /opt/ml/processing/output/evaluation.json
-"""
-
 import argparse
 import json
 import sys
@@ -29,7 +12,6 @@ from src.config import config
 
 
 def get_prod_f1(model_package_group: str) -> float:
-    """Return f1_macro of the latest Approved model package, or 0.0 if none."""
     sm = boto3.client("sagemaker", region_name=config.aws.region)
     try:
         paginator = sm.get_paginator("list_model_packages")
@@ -56,7 +38,6 @@ def get_prod_f1(model_package_group: str) -> float:
 
 
 def _read_f1_from_s3(s3_uri: str) -> float:
-    """Download metrics JSON stored in S3 by the register step and return f1_macro."""
     s3 = boto3.client("s3")
     parts = s3_uri.replace("s3://", "").split("/", 1)
     bucket, key = parts[0], parts[1]
@@ -70,7 +51,6 @@ def _read_f1_from_s3(s3_uri: str) -> float:
 
 
 def run_evaluate(baseline: dict, improved: dict, model_package_group: str) -> dict:
-    """Compare candidate metrics against each other and production. Returns evaluation dict."""
     baseline_f1 = float(baseline["f1_macro"])
     improved_f1 = float(improved["f1_macro"])
 
@@ -119,7 +99,6 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Load candidate metrics ────────────────────────────────────────────────
     baseline_metrics_path = input_dir / "baseline" / "metrics.json"
     improved_metrics_path = input_dir / "improved" / "metrics.json"
 
@@ -134,7 +113,6 @@ def main() -> None:
     print(f"Baseline f1_macro:  {baseline_f1:.4f}")
     print(f"Improved f1_macro:  {improved_f1:.4f}")
 
-    # ── Pick the better candidate ─────────────────────────────────────────────
     if improved_f1 >= baseline_f1:
         best_model = "improved"
         best_f1 = improved_f1
@@ -144,7 +122,6 @@ def main() -> None:
 
     print(f"Best candidate:     {best_model} ({best_f1:.4f})")
 
-    # ── Compare against production ────────────────────────────────────────────
     prod_f1 = get_prod_f1(args.model_package_group)
     print(f"Current prod f1:    {prod_f1:.4f}")
     print(f"Threshold:          {config.sagemaker.f1_threshold}")
@@ -156,7 +133,6 @@ def main() -> None:
         "best_f1_macro": best_f1,
         "prod_f1_macro": prod_f1,
         "f1_threshold": config.sagemaker.f1_threshold,
-        # exceeds_threshold is informational; the ConditionStep does the numeric comparison
         "exceeds_threshold": best_f1 >= prod_f1 + config.sagemaker.f1_threshold,
     }
 
