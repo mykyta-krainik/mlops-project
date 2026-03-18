@@ -69,7 +69,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install boto3 "evidently==0.4.40" pandas pyarrow python-dotenv
+      - run: pip install boto3 "evidently==0.4.40" pandas pyarrow python-dotenv sagemaker
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -107,6 +107,24 @@ jobs:
           TITLE="[Alert] Drift/SLO check failed $(date +%Y-%m-%d)"
           BODY="Drift or SLO check failed in scheduled run ${{ github.run_id }}.\n\nSee artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh issue create --title "$TITLE" --body "$BODY"
+
+      - name: Trigger retrain on drift
+        if: steps.drift.outcome == 'failure'
+        env:
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+          ECR_IMAGE_URI: ${{ secrets.ECR_REGISTRY }}/mlops-toxic:latest
+          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_RAW_BUCKET: mlops-toxic-raw
+          AWS_PROCESSED_BUCKET: mlops-toxic-processed
+          AWS_MODELS_BUCKET: mlops-toxic-models
+          AWS_PIPELINE_BUCKET: mlops-toxic-pipeline
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          python pipelines/run_pipeline.py \
+            --run-name "drift-retrain-$(date +%Y%m%d)" \
+            --wait
 
       - name: Fail workflow if checks failed
         if: steps.drift.outcome == 'failure' || steps.slo.outcome == 'failure'
