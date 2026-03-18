@@ -264,6 +264,10 @@ Resources:
                 Action:
                   - cloudformation:DescribeStacks
                 Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              - Effect: Allow
+                Action:
+                  - sns:Subscribe
+                Resource: !Ref AlertsTopic
 
   LambdaExecRole:
     Type: AWS::IAM::Role
