@@ -292,6 +292,43 @@ def promote_to_prod(run_name: str) -> None:
         print(f"Staging '{staging_endpoint}' has no green variant (first run) — skipping weight shift")
 
 
+def rollback_staging() -> None:
+    sm = boto3.client("sagemaker", region_name=config.aws.region)
+    endpoint_name = config.sagemaker.staging_endpoint
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+
+    staging_config_name = sm.describe_endpoint(EndpointName=endpoint_name)["EndpointConfigName"]
+    staging_config = sm.describe_endpoint_config(EndpointConfigName=staging_config_name)
+    variants = staging_config["ProductionVariants"]
+
+    blue_variant = next((v for v in variants if v["VariantName"] == "blue"), None)
+    if blue_variant is None:
+        print("No blue variant found on staging — nothing to roll back to.")
+        return
+
+    blue_model_name = blue_variant["ModelName"]
+    print(f"Rolling back staging to 100% blue (model: {blue_model_name})")
+
+    rollback_config_name = f"mlops-toxic-staging-rollback-{ts}"
+    sm.create_endpoint_config(
+        EndpointConfigName=rollback_config_name,
+        ProductionVariants=[
+            {
+                "VariantName": "blue",
+                "ModelName": blue_model_name,
+                "InstanceType": config.sagemaker.instance_type,
+                "InitialInstanceCount": 1,
+                "InitialVariantWeight": 1.0,
+            }
+        ],
+    )
+
+    sm.update_endpoint(EndpointName=endpoint_name, EndpointConfigName=rollback_config_name)
+    print(f"Staging rollback initiated with config '{rollback_config_name}'")
+    _wait_for_endpoint(sm, endpoint_name)
+    print("Staging rolled back to 100% blue.")
+
+
 def simulate_failure() -> None:
     """Dev-only: update staging to a bad config to test SageMaker auto-rollback."""
     sm = boto3.client("sagemaker", region_name=config.aws.region)
@@ -364,11 +401,16 @@ def main() -> None:
         default="mlops-toxic-models",
     )
     parser.add_argument("--to-prod", action="store_true", help="Promote staging green to production")
+    parser.add_argument("--rollback-staging", action="store_true", help="Roll staging back to 100% blue")
     parser.add_argument("--simulate-failure", action="store_true", help="Dev: test auto-rollback")
     args = parser.parse_args()
 
     if args.simulate_failure:
         simulate_failure()
+        return
+
+    if args.rollback_staging:
+        rollback_staging()
         return
 
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
