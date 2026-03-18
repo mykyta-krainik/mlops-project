@@ -10,14 +10,10 @@ ENV LC_ALL=en_US.UTF-8
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-serve.txt .
+RUN pip install --no-cache-dir -r requirements-serve.txt
 
 COPY src/ ./src/
-COPY pipelines/ ./pipelines/
-COPY monitoring/ ./monitoring/
-COPY locustfile.py ./locustfile.py
-COPY scripts/ ./scripts/
 
 ENV PYTHONPATH=/app
 

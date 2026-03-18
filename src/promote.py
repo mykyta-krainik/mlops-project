@@ -155,14 +155,14 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
             {
                 "VariantName": "blue",
                 "ModelName": current_model_name,
-                "InstanceType": config.sagemaker.instance_type,
+                "InstanceType": config.sagemaker.staging_instance_type,
                 "InitialInstanceCount": 1,
                 "InitialVariantWeight": 0.8,
             },
             {
                 "VariantName": "green",
                 "ModelName": new_model_name,
-                "InstanceType": config.sagemaker.instance_type,
+                "InstanceType": config.sagemaker.staging_instance_type,
                 "InitialInstanceCount": 1,
                 "InitialVariantWeight": 0.2,
             },
@@ -172,7 +172,7 @@ def deploy_canary_to_staging(model_s3_uri: str, ecr_image_uri: str, run_name: st
             {
                 "VariantName": "green",
                 "ModelName": new_model_name,
-                "InstanceType": config.sagemaker.instance_type,
+                "InstanceType": config.sagemaker.staging_instance_type,
                 "InitialInstanceCount": 1,
                 "InitialVariantWeight": 1.0,
             }
