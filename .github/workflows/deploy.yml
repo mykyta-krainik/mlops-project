@@ -97,7 +97,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Run Locust against staging
         env:
-          SAGEMAKER_ENDPOINT_NAME: mlops-toxic-staging
+          SAGEMAKER_ENDPOINT_NAME: toxic-comment-staging
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
           locust --headless \

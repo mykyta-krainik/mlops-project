@@ -9,7 +9,7 @@ Run:
     --locustfile locustfile.py
 
 Environment variables:
-  SAGEMAKER_ENDPOINT_NAME  (default: mlops-toxic-staging)
+  SAGEMAKER_ENDPOINT_NAME  (default: toxic-comment-staging)
   AWS_REGION               (default: us-east-1)
 """
 
@@ -21,7 +21,7 @@ import time
 import boto3
 from locust import User, between, events, task
 
-ENDPOINT_NAME = os.environ.get("SAGEMAKER_ENDPOINT_NAME", "mlops-toxic-staging")
+ENDPOINT_NAME = os.environ.get("SAGEMAKER_ENDPOINT_NAME", "toxic-comment-staging")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 SAMPLE_COMMENTS = [
