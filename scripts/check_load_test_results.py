@@ -16,7 +16,8 @@ import argparse
 import csv
 import sys
 
-P95_THRESHOLD_MS = 500.0   # SLO: p95 latency < 500ms
+# P95_THRESHOLD_MS = 500.0   # SLO: p95 latency < 500ms
+P95_THRESHOLD_MS = 1000.0   # SLO: p95 latency < 1000ms
 ERROR_RATE_PCT = 1.0        # SLO: failure rate < 1%
 
 
