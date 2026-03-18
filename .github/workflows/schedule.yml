@@ -16,7 +16,7 @@ on:
 permissions:
   id-token: write
   contents: read
-  issues: write   # for gh issue create on drift/SLO failure
+  issues: write
 
 env:
   AWS_REGION: us-east-1
