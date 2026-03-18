@@ -270,7 +270,7 @@ def main():
         save_to_minio=not args.no_minio_save,
     )
 
-    print(f"\nTraining complete!")
+    print("\nTraining complete!")
     print(f"Final ROC-AUC (macro): {metrics['roc_auc_macro']:.4f}")
 
 
