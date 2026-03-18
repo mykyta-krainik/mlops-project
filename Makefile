@@ -1,4 +1,4 @@
-.PHONY: up down restart logs clean ingest train init help \
+.PHONY: up down restart logs clean ingest api api-sagemaker train init help \
         upload-data ecr-push sm-pipeline-run drift-check slo-check load-test \
         cf-deploy cf-delete cf-outputs test lint
 
@@ -30,6 +30,13 @@ ingest:
 	echo "Failed to unpause DAG after 60 seconds." && exit 1
 	docker exec airflow-scheduler airflow dags trigger data_ingestion
 	@echo "DAG triggered. Check Airflow UI at http://localhost:8080"
+
+api:
+	PYTHONPATH=. python src/api/app.py
+
+api-sagemaker:
+	@if [ -z "$${SAGEMAKER_ENDPOINT_NAME}" ]; then echo "ERROR: SAGEMAKER_ENDPOINT_NAME not set"; exit 1; fi
+	PYTHONPATH=. python src/api/app.py
 
 train:
 	@echo "Starting Model Training..."
@@ -113,9 +120,11 @@ load-test:
 
 help:
 	@echo "Local demo:"
-	@echo "  make up          Start docker-compose (MinIO + Airflow + Flask API)"
-	@echo "  make train       Train model locally and reload API"
-	@echo "  make down        Stop all local services"
+	@echo "  make up                          Start docker-compose (MinIO + Airflow + Flask API)"
+	@echo "  make api                         Run Flask API locally (MinIO backend)"
+	@echo "  make api-sagemaker               Run Flask API using SageMaker endpoint (set SAGEMAKER_ENDPOINT_NAME)"
+	@echo "  make train                       Train model locally and reload API"
+	@echo "  make down                        Stop all local services"
 	@echo ""
 	@echo "AWS:"
 	@echo "  make upload-data Upload train.csv to S3 raw bucket"

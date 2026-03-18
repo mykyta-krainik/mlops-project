@@ -1,8 +1,10 @@
+import json
 import logging
 import os
 import tempfile
 from typing import Optional
 
+import boto3
 from flask import Flask, jsonify, request
 
 from src.api.moderation import moderation_decider
@@ -22,6 +24,24 @@ from src.models.baseline import ToxicCommentClassifier
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+SAGEMAKER_ENDPOINT = os.environ.get("SAGEMAKER_ENDPOINT_NAME")
+_sm_runtime = (
+    boto3.client("sagemaker-runtime", region_name=os.environ.get("AWS_REGION", config.aws.region))
+    if SAGEMAKER_ENDPOINT
+    else None
+)
+
+
+def _sagemaker_predict(payload: dict) -> list[dict]:
+    response = _sm_runtime.invoke_endpoint(
+        EndpointName=SAGEMAKER_ENDPOINT,
+        ContentType="application/json",
+        Accept="application/json",
+        Body=json.dumps(payload),
+    )
+    result = json.loads(response["Body"].read())
+    return result if isinstance(result, list) else [result]
 
 
 class ModelManager:
@@ -92,6 +112,8 @@ def create_app() -> Flask:
 
     @app.before_request
     def ensure_model_loaded():
+        if SAGEMAKER_ENDPOINT:
+            return  # SageMaker mode — no local model needed
         if not model_manager.is_loaded:
             try:
                 model_manager.load_from_minio(
@@ -103,9 +125,14 @@ def create_app() -> Flask:
 
     @app.route("/health", methods=["GET"])
     def health_check():
+        if SAGEMAKER_ENDPOINT:
+            status, loaded = "healthy", True
+        else:
+            status = "healthy" if model_manager.is_loaded else "degraded"
+            loaded = model_manager.is_loaded
         response = HealthResponse(
-            status="healthy" if model_manager.is_loaded else "degraded",
-            model_loaded=model_manager.is_loaded,
+            status=status,
+            model_loaded=loaded,
             version=config.api.model_version,
         )
         return jsonify(response.model_dump())
@@ -116,27 +143,30 @@ def create_app() -> Flask:
             version=config.api.model_version,
             model_type="TF-IDF + Logistic Regression (ONNX)",
             target_labels=list(config.model.target_columns),
-            loaded=model_manager.is_loaded,
-            source=model_manager._model_source,
+            loaded=bool(SAGEMAKER_ENDPOINT) or model_manager.is_loaded,
+            source=f"sagemaker://{SAGEMAKER_ENDPOINT}" if SAGEMAKER_ENDPOINT else model_manager._model_source,
         )
         return jsonify(response.model_dump())
 
     @app.route("/predict", methods=["POST"])
     def predict():
-        if not model_manager.is_loaded:
-            return jsonify(
-                ErrorResponse(
-                    error="Model not loaded",
-                    detail="The model is not available. Please try again later.",
-                ).model_dump()
-            ), 503
-
         try:
             data = request.get_json()
             req = PredictRequest(**data)
 
-            predictions = model_manager.predict(req.comment)
+            if SAGEMAKER_ENDPOINT:
+                results = _sagemaker_predict({"comment": req.comment})
+                return jsonify(results[0])
 
+            if not model_manager.is_loaded:
+                return jsonify(
+                    ErrorResponse(
+                        error="Model not loaded",
+                        detail="The model is not available. Please try again later.",
+                    ).model_dump()
+                ), 503
+
+            predictions = model_manager.predict(req.comment)
             action = moderation_decider.decide(predictions)
             is_toxic = moderation_decider.is_toxic(predictions)
 
@@ -147,7 +177,6 @@ def create_app() -> Flask:
                 moderation_action=action,
                 model_version=config.api.model_version,
             )
-
             return jsonify(result.model_dump())
 
         except Exception as e:
@@ -158,17 +187,22 @@ def create_app() -> Flask:
 
     @app.route("/predict/batch", methods=["POST"])
     def predict_batch():
-        if not model_manager.is_loaded:
-            return jsonify(
-                ErrorResponse(
-                    error="Model not loaded",
-                    detail="The model is not available. Please try again later.",
-                ).model_dump()
-            ), 503
-
         try:
             data = request.get_json()
             req = BatchPredictRequest(**data)
+
+            if SAGEMAKER_ENDPOINT:
+                results = _sagemaker_predict({"comments": req.comments})
+                response = BatchPredictionResponse(results=results, total=len(results))
+                return jsonify(response.model_dump())
+
+            if not model_manager.is_loaded:
+                return jsonify(
+                    ErrorResponse(
+                        error="Model not loaded",
+                        detail="The model is not available. Please try again later.",
+                    ).model_dump()
+                ), 503
 
             results = []
             for comment in req.comments:
@@ -189,7 +223,6 @@ def create_app() -> Flask:
                 results=[r.model_dump() for r in results],
                 total=len(results),
             )
-
             return jsonify(response.model_dump())
 
         except Exception as e:
