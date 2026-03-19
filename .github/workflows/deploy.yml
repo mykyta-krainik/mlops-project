@@ -4,14 +4,24 @@ on:
   workflow_call:
     inputs:
       image_uri:
-        required: true
+        required: false
         type: string
+      retrain:
+        description: "Whether to run the SageMaker training pipeline"
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       image_uri:
         description: "ECR image URI (leave blank to use latest)"
         required: false
         type: string
+      retrain:
+        description: "Whether to run the SageMaker training pipeline"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
@@ -45,6 +55,7 @@ jobs:
 
   trigger-pipeline:
     name: Trigger SageMaker Pipeline
+    if: inputs.retrain
     runs-on: ubuntu-latest
     outputs:
       execution_arn: ${{ steps.run.outputs.execution_arn }}
@@ -82,6 +93,7 @@ jobs:
   load-test-staging:
     name: Load test staging endpoint
     needs: trigger-pipeline
+    if: inputs.retrain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,6 +154,7 @@ jobs:
   promote-to-prod:
     name: Promote to production
     needs: load-test-staging
+    if: inputs.retrain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

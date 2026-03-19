@@ -3,6 +3,12 @@ name: Build & Push ECR
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'pipelines/**'
+      - 'Dockerfile'
+      - 'requirements*.txt'
+      - 'cloudformation/**'
   workflow_dispatch:
 
 permissions:
@@ -13,8 +19,28 @@ env:
   AWS_REGION: us-east-1
 
 jobs:
+  detect-changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      model: ${{ steps.filter.outputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check model-relevant paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            model:
+              - 'src/**'
+              - 'pipelines/**'
+              - 'Dockerfile'
+              - 'requirements*.txt'
+
   build:
     name: Build and push Docker image to ECR
+    needs: detect-changes
+    if: needs.detect-changes.outputs.model == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       image_uri: ${{ steps.build.outputs.image_uri }}
@@ -51,8 +77,27 @@ jobs:
 
   trigger-deploy:
     name: Trigger deploy workflow
-    needs: build
+    needs: [detect-changes, build]
+    if: |
+      always() &&
+      !failure() && !cancelled() &&
+      (needs.detect-changes.outputs.model == 'true' || github.event_name == 'workflow_dispatch')
     uses: ./.github/workflows/deploy.yml
     with:
       image_uri: ${{ needs.build.outputs.image_uri }}
+      retrain: true
+    secrets: inherit
+
+  trigger-deploy-infra-only:
+    name: Trigger infra-only deploy
+    needs: [detect-changes, build]
+    if: |
+      always() &&
+      !failure() && !cancelled() &&
+      needs.detect-changes.outputs.model == 'false' &&
+      github.event_name != 'workflow_dispatch'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image_uri: ''
+      retrain: false
     secrets: inherit
