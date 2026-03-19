@@ -127,6 +127,17 @@ def publish_cloudwatch_metric(drift_score: float) -> None:
     print(f"Published DriftScore={drift_score:.4f} to CloudWatch")
 
 
+def upload_status(s3_client, pipeline_bucket: str, status: dict) -> None:
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    s3_client.put_object(
+        Bucket=pipeline_bucket,
+        Key=f"drift-reports/{date_str}/drift_summary.json",
+        Body=json.dumps(status, default=str),
+        ContentType="application/json",
+    )
+    print(f"Status written to s3://{pipeline_bucket}/drift-reports/{date_str}/drift_summary.json")
+
+
 def main() -> None:
     s3 = boto3.client("s3", region_name=config.aws.region)
     drift_score = 0.0
@@ -140,6 +151,7 @@ def main() -> None:
         except Exception as e:
             print(f"Could not download reference dataset: {e}")
             print("Skipping drift check (reference not available — run pipeline first).")
+            upload_status(s3, config.aws.pipeline_bucket, {"status": "skipped", "reason": "reference_unavailable", "error": str(e)})
             return
 
         print("Downloading recent captured data…")
@@ -148,6 +160,7 @@ def main() -> None:
 
         if len(current_df) < 300:
             print(f"Not enough captured data for drift analysis ({len(current_df)} rows, need >= 300). Skipping.")
+            upload_status(s3, config.aws.pipeline_bucket, {"status": "skipped", "reason": "insufficient_data", "captured_rows": len(current_df), "required_rows": 300})
             return
 
         print("Running Evidently drift report…")
