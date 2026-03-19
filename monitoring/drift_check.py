@@ -121,7 +121,7 @@ def publish_cloudwatch_metric(drift_score: float) -> None:
                 "Value": drift_score,
                 "Unit": "None",
                 "Timestamp": datetime.now(timezone.utc),
-                "Dimensions": [{"Name": "Endpoint", "Value": "mlops-toxic-prod"}],
+                "Dimensions": [{"Name": "Endpoint", "Value": config.sagemaker.prod_endpoint}],
             }
         ],
     )

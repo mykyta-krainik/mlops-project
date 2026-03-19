@@ -110,8 +110,8 @@ def predict_fn(comments: list[str], model_dict: dict) -> list[dict]:
                 },
             ],
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"CloudWatch metric publish failed: {e}")
 
     return results
 

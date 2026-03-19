@@ -3,7 +3,6 @@ Description: >
   mlops-toxic — all AWS resources for the toxic-comment MLOps project.
   Single stack; no bootstrapping required (state is managed by CloudFormation).
 
-# ── Parameters ──────────────────────────────────────────────────────────────
 Parameters:
   Project:
     Type: String
@@ -27,11 +26,17 @@ Parameters:
     Default: "0.3"
     Description: Evidently drift score above which the DriftAlarm fires.
 
-# ── Resources ────────────────────────────────────────────────────────────────
+  StagingEndpoint:
+    Type: String
+    Default: toxic-comment-staging
+    Description: Name of the SageMaker staging endpoint.
+
+  ProdEndpoint:
+    Type: String
+    Default: toxic-comment-prod
+    Description: Name of the SageMaker production endpoint.
+
 Resources:
-
-  # ── S3 Buckets ─────────────────────────────────────────────────────────────
-
   RawBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -104,8 +109,6 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  # ── ECR ────────────────────────────────────────────────────────────────────
-
   ECRRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -128,8 +131,6 @@ Resources:
               }
             ]
           }
-
-  # ── IAM ────────────────────────────────────────────────────────────────────
 
   SageMakerExecRole:
     Type: AWS::IAM::Role
@@ -250,12 +251,15 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
+                  - s3:PutObject
                   - s3:ListBucket
                 Resource:
                   - !GetAtt PipelineBucket.Arn
                   - !Sub "${PipelineBucket.Arn}/*"
                   - !GetAtt ModelsBucket.Arn
                   - !Sub "${ModelsBucket.Arn}/*"
+                  - !GetAtt ProcessedBucket.Arn
+                  - !Sub "${ProcessedBucket.Arn}/*"
               - Effect: Allow
                 Action:
                   - iam:PassRole
@@ -284,6 +288,11 @@ Resources:
                 Action:
                   - iam:PassRole
                 Resource: !GetAtt LambdaExecRole.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricStatistics
+                Resource: "*"
 
   LambdaExecRole:
     Type: AWS::IAM::Role
@@ -314,29 +323,22 @@ Resources:
                   - ssm:GetParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/mlops-toxic/*"
 
-  # ── SageMaker ──────────────────────────────────────────────────────────────
-  # Endpoints and endpoint configs are NOT managed here.
-  # promote.py creates/updates them with the real trained model after each
-  # pipeline run. Only the model package group (registry) is provisioned here.
-
   ModelPackageGroup:
     Type: AWS::SageMaker::ModelPackageGroup
     Properties:
       ModelPackageGroupName: !Sub "${Project}-models"
       ModelPackageGroupDescription: "Toxic comment classifier model registry"
 
-  # ── CloudWatch ─────────────────────────────────────────────────────────────
-
   StagingLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${Project}-staging"
+      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${StagingEndpoint}"
       RetentionInDays: 30
 
   ProdLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${Project}-prod"
+      LogGroupName: !Sub "/aws/sagemaker/Endpoints/${ProdEndpoint}"
       RetentionInDays: 90
 
   Dashboard:
@@ -352,8 +354,8 @@ Resources:
                 "title": "Invocations",
                 "region": "${AWS::Region}",
                 "metrics": [
-                  ["AWS/SageMaker", "Invocations", "EndpointName", "${Project}-staging", "VariantName", "blue"],
-                  ["AWS/SageMaker", "Invocations", "EndpointName", "${Project}-prod", "VariantName", "blue"]
+                  ["AWS/SageMaker", "Invocations", "EndpointName", "${StagingEndpoint}", "VariantName", "blue"],
+                  ["AWS/SageMaker", "Invocations", "EndpointName", "${ProdEndpoint}", "VariantName", "blue"]
                 ],
                 "period": 60, "stat": "Sum", "view": "timeSeries"
               }
@@ -364,8 +366,8 @@ Resources:
                 "title": "Latency p50 / p99 (µs)",
                 "region": "${AWS::Region}",
                 "metrics": [
-                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${Project}-prod", "VariantName", "blue", {"stat": "p50"}],
-                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${Project}-prod", "VariantName", "blue", {"stat": "p99"}]
+                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${ProdEndpoint}", "VariantName", "blue", {"stat": "p50"}],
+                  ["AWS/SageMaker", "ModelLatency", "EndpointName", "${ProdEndpoint}", "VariantName", "blue", {"stat": "p99"}]
                 ],
                 "period": 60, "view": "timeSeries"
               }
@@ -376,8 +378,8 @@ Resources:
                 "title": "4xx / 5xx Errors",
                 "region": "${AWS::Region}",
                 "metrics": [
-                  ["AWS/SageMaker", "Invocation4XXErrors", "EndpointName", "${Project}-prod", "VariantName", "blue"],
-                  ["AWS/SageMaker", "Invocation5XXErrors", "EndpointName", "${Project}-prod", "VariantName", "blue"]
+                  ["AWS/SageMaker", "Invocation4XXErrors", "EndpointName", "${ProdEndpoint}", "VariantName", "blue"],
+                  ["AWS/SageMaker", "Invocation5XXErrors", "EndpointName", "${ProdEndpoint}", "VariantName", "blue"]
                 ],
                 "period": 60, "stat": "Sum", "view": "timeSeries"
               }
@@ -388,7 +390,7 @@ Resources:
                 "title": "Drift Score",
                 "region": "${AWS::Region}",
                 "metrics": [
-                  ["${Project}/monitoring", "DriftScore", "Endpoint", "${Project}-prod"]
+                  ["${Project}/monitoring", "DriftScore", "Endpoint", "${ProdEndpoint}"]
                 ],
                 "period": 3600, "stat": "Maximum", "view": "timeSeries"
               }
@@ -405,7 +407,7 @@ Resources:
       MetricName: ModelLatency
       Dimensions:
         - Name: EndpointName
-          Value: !Sub "${Project}-prod"
+          Value: !Ref ProdEndpoint
         - Name: VariantName
           Value: blue
       ExtendedStatistic: p99
@@ -431,7 +433,7 @@ Resources:
               MetricName: Invocations
               Dimensions:
                 - Name: EndpointName
-                  Value: !Sub "${Project}-prod"
+                  Value: !Ref ProdEndpoint
                 - Name: VariantName
                   Value: blue
             Period: 60
@@ -444,7 +446,7 @@ Resources:
               MetricName: Invocation4XXErrors
               Dimensions:
                 - Name: EndpointName
-                  Value: !Sub "${Project}-prod"
+                  Value: !Ref ProdEndpoint
                 - Name: VariantName
                   Value: blue
             Period: 60
@@ -457,7 +459,7 @@ Resources:
               MetricName: Invocation5XXErrors
               Dimensions:
                 - Name: EndpointName
-                  Value: !Sub "${Project}-prod"
+                  Value: !Ref ProdEndpoint
                 - Name: VariantName
                   Value: blue
             Period: 60
@@ -483,7 +485,7 @@ Resources:
       MetricName: DriftScore
       Dimensions:
         - Name: Endpoint
-          Value: !Sub "${Project}-prod"
+          Value: !Ref ProdEndpoint
       Statistic: Maximum
       Period: 3600
       EvaluationPeriods: 1
@@ -493,8 +495,6 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
         - !GetAtt RetrainTriggerFunction.Arn
-
-  # ── SNS ────────────────────────────────────────────────────────────────────
 
   AlertsTopic:
     Type: AWS::SNS::Topic
@@ -508,8 +508,6 @@ Resources:
       Protocol: email
       Endpoint: !Ref AlertEmail
 
-  # ── Lambda ─────────────────────────────────────────────────────────────────
-
   RollbackFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -520,7 +518,7 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          ENDPOINT_NAME: !Sub "${Project}-prod"
+          ENDPOINT_NAME: !Ref ProdEndpoint
           FALLBACK_CONFIG_SSM: "/mlops-toxic/prod/fallback-config"
       Code:
         ZipFile: |
@@ -585,8 +583,6 @@ Resources:
       Principal: events.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
 
-  # ── EventBridge ────────────────────────────────────────────────────────────
-
   NewDataRule:
     Type: AWS::Events::Rule
     Properties:
@@ -606,7 +602,6 @@ Resources:
         - Id: RetrainTarget
           Arn: !GetAtt RetrainTriggerFunction.Arn
 
-# ── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ECRRepositoryUrl:
     Description: ECR repository URI
@@ -628,13 +623,13 @@ Outputs:
 
   StagingEndpointName:
     Description: SageMaker staging endpoint name (created by promote.py after first pipeline run)
-    Value: !Sub "${Project}-staging"
+    Value: !Ref StagingEndpoint
     Export:
       Name: !Sub "${AWS::StackName}-StagingEndpointName"
 
   ProdEndpointName:
     Description: SageMaker production endpoint name (created by promote.py after first pipeline run)
-    Value: !Sub "${Project}-prod"
+    Value: !Ref ProdEndpoint
     Export:
       Name: !Sub "${AWS::StackName}-ProdEndpointName"
 
