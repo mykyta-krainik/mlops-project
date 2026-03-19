@@ -302,7 +302,7 @@ def simulate_failure() -> None:
             {
                 "VariantName": "blue",
                 "ModelName": "nonexistent-model-for-failure-test",
-                "InstanceType": "ml.t3.medium",
+                "InstanceType": "ml.m5.large",
                 "InitialInstanceCount": 1,
                 "InitialVariantWeight": 1.0,
             }

@@ -126,7 +126,7 @@ class SageMakerConfig:
     staging_endpoint: str = "toxic-comment-staging"
     prod_endpoint: str = "toxic-comment-prod"
     instance_type: str = field(default_factory=lambda: os.getenv("SM_INSTANCE_TYPE", "ml.m5.large"))
-    staging_instance_type: str = field(default_factory=lambda: os.getenv("SM_STAGING_INSTANCE_TYPE", "ml.t3.medium"))
+    staging_instance_type: str = field(default_factory=lambda: os.getenv("SM_STAGING_INSTANCE_TYPE", "ml.m5.large"))
     ecr_image_uri: str = field(default_factory=lambda: os.getenv("ECR_IMAGE_URI", ""))
     f1_threshold: float = field(default_factory=lambda: float(os.getenv("F1_THRESHOLD", "0.02")))
 
