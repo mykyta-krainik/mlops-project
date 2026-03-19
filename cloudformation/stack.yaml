@@ -292,6 +292,7 @@ Resources:
                 Action:
                   - cloudwatch:PutMetricData
                   - cloudwatch:GetMetricStatistics
+                  - cloudwatch:PutDashboard
                 Resource: "*"
 
   LambdaExecRole:
